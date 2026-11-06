@@ -43,7 +43,10 @@ fn resident_idempotency_caller_scope(
     }
 }
 
-fn resident_idempotency_fingerprint(request: &MctCallProtocolRequest) -> MctIdempotencyFingerprint {
+fn resident_idempotency_fingerprint(
+    request: &MctCallProtocolRequest,
+    discriminator: Option<&str>,
+) -> MctIdempotencyFingerprint {
     let payload_digest = match &request.payload {
         MctCallPayloadHandle::InlinePayload {
             blake3_digest_hex, ..
@@ -56,6 +59,13 @@ fn resident_idempotency_fingerprint(request: &MctCallProtocolRequest) -> MctIdem
             )
         }
         MctCallPayloadHandle::Empty => "empty".into(),
+    };
+    let payload_digest = match discriminator {
+        Some(value) => format!(
+            "{payload_digest};constraint-blake3:{}",
+            blake3_hex(value.as_bytes())
+        ),
+        None => payload_digest,
     };
     MctIdempotencyFingerprint {
         target: mct_daemon::operation_id_from_target(&request.call.target),
@@ -334,7 +344,10 @@ where
         request,
         now,
         context,
-        Some(execution_id),
+        IdempotentExecutionOptions {
+            execution_call_id: Some(execution_id),
+            fingerprint_discriminator: None,
+        },
         execute,
     )
     .await
@@ -353,8 +366,22 @@ where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = MctIrohCallHandlerResult>,
 {
-    execute_idempotent_call_with_execution(state_path, ledger, request, now, context, None, execute)
-        .await
+    execute_idempotent_call_with_execution(
+        state_path,
+        ledger,
+        request,
+        now,
+        context,
+        IdempotentExecutionOptions::default(),
+        execute,
+    )
+    .await
+}
+
+#[derive(Default)]
+pub(super) struct IdempotentExecutionOptions {
+    pub(super) execution_call_id: Option<CallId>,
+    pub(super) fingerprint_discriminator: Option<String>,
 }
 
 /// Correlation fingerprints remain caller-scoped; execution IDs are Mother minted.
@@ -364,7 +391,7 @@ pub(super) async fn execute_idempotent_call_with_execution<F, Fut>(
     request: MctCallProtocolRequest,
     now: Timestamp,
     context: ResidentCallIngressContext,
-    execution_call_id: Option<CallId>,
+    options: IdempotentExecutionOptions,
     execute: F,
 ) -> MctIrohCallHandlerResult
 where
@@ -378,10 +405,11 @@ where
         return execute().await;
     };
     let caller_scope = resident_idempotency_caller_scope(&request, &context);
-    let fingerprint = resident_idempotency_fingerprint(&request);
+    let fingerprint =
+        resident_idempotency_fingerprint(&request, options.fingerprint_discriminator.as_deref());
     // Later observations use execution identity, never the raw correlation ID.
     let mut request = request;
-    if let Some(id) = &execution_call_id {
+    if let Some(id) = &options.execution_call_id {
         request.call.call_id = id.clone();
     }
     let expires_at = match idempotency_expiry(&now) {
@@ -443,7 +471,7 @@ where
             idempotency_refusal_result(reason)
         }
         MctIdempotencyReservation::ExecuteFresh => {
-            if let Some(id) = &execution_call_id
+            if let Some(id) = &options.execution_call_id
                 && MctRuntimeStateStore::open(&state_path)
                     .and_then(|state| {
                         state.bind_call_execution_identity(
@@ -675,6 +703,22 @@ mod tests {
         assert!(
             !state_path.exists(),
             "origin/caller forgery must not allocate a new retry budget"
+        );
+    }
+
+    #[test]
+    fn exact_mother_constraint_participates_in_idempotency_fingerprint() {
+        let request = resident_test_protocol_request(resident_test_call(
+            TraceId::new("trace-route-constraint-fingerprint").unwrap(),
+        ));
+        let unconstrained = resident_idempotency_fingerprint(&request, None);
+        let mother_a = resident_idempotency_fingerprint(&request, Some("required-node:mother-a"));
+        let mother_b = resident_idempotency_fingerprint(&request, Some("required-node:mother-b"));
+        assert_ne!(unconstrained, mother_a);
+        assert_ne!(mother_a, mother_b);
+        assert_eq!(
+            mother_a,
+            resident_idempotency_fingerprint(&request, Some("required-node:mother-a"))
         );
     }
 

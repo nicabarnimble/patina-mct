@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/../.."
-output="$PWD/target/first-real-app"
+output=${1:-"$PWD/target/first-real-app"}
+[[ $output == /* ]] || { echo 'output must be absolute' >&2; exit 2; }
 mkdir -p "$output"
 CARGO_TARGET_DIR="$output/build" cargo build -p mct-repo-report --target wasm32-wasip1 --release --locked --offline
 wasm-tools component new "$output/build/wasm32-wasip1/release/mct_repo_report.wasm" -o "$output/mct-repo-report.wasm"

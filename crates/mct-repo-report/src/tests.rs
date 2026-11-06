@@ -19,6 +19,8 @@ fn counts_and_duplicates() {
     assert_eq!(v["registry_count"], 1);
     assert_eq!(v["git_count"], 1);
     assert_eq!(v["local_count"], 1);
+    assert_eq!(v["packages"]["a"], serde_json::json!(["1", "2"]));
+    assert_eq!(v["packages"]["b"], serde_json::json!(["1"]));
     assert_eq!(v["duplicates"]["a"], serde_json::json!(["1", "2"]));
 }
 #[test]

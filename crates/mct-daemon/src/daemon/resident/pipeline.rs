@@ -569,10 +569,33 @@ pub(crate) async fn execute_resident_call(
     request: MctCallProtocolRequest,
     payload: ResidentPayloadIngress,
 ) -> MctIrohCallHandlerResult {
+    execute_resident_call_with_required_node(paths, ledger, request, payload, None).await
+}
+
+pub(crate) async fn execute_resident_call_with_required_node(
+    paths: ResidentRuntimePaths,
+    ledger: ResidentLedgerWriter,
+    request: MctCallProtocolRequest,
+    payload: ResidentPayloadIngress,
+    required_node_id: Option<MctNodeId>,
+) -> MctIrohCallHandlerResult {
     let Some(context) = ResidentCallIngressContext::from_ingress(&request, &payload) else {
         return MctIrohCallHandlerResult::denied();
     };
-    execute_resident_call_with_context(paths, ledger, request, payload, context).await
+    execute_resident_call_at_with_context(
+        paths,
+        ledger,
+        request,
+        payload,
+        current_timestamp(),
+        ResidentExecutionOverrides {
+            effect_time: None,
+            post_mint_mutation: None,
+            required_node_id,
+        },
+        context,
+    )
+    .await
 }
 
 pub(crate) async fn execute_resident_call_with_context(
@@ -614,6 +637,7 @@ pub(super) async fn execute_resident_call_at(
         ResidentExecutionOverrides {
             effect_time: Some(now),
             post_mint_mutation: None,
+            required_node_id: None,
         },
         context,
     )
@@ -640,6 +664,7 @@ pub(super) async fn execute_resident_call_with_post_mint_mutation(
         ResidentExecutionOverrides {
             effect_time: None,
             post_mint_mutation: Some(mutation),
+            required_node_id: None,
         },
         context,
     )
@@ -650,6 +675,7 @@ pub(super) async fn execute_resident_call_with_post_mint_mutation(
 struct ResidentExecutionOverrides {
     effect_time: Option<Timestamp>,
     post_mint_mutation: Option<AuthorityMutationRequestV1>,
+    required_node_id: Option<MctNodeId>,
 }
 
 async fn record_receiver_echo_denial(
@@ -898,6 +924,14 @@ async fn execute_resident_call_at_with_context(
         }
     };
 
+    let ResidentExecutionOverrides {
+        effect_time,
+        post_mint_mutation,
+        required_node_id,
+    } = overrides;
+    let fingerprint_discriminator = required_node_id
+        .as_ref()
+        .map(|node_id| format!("required-node:{node_id}"));
     let state_path = paths.state_path().to_path_buf();
     let mut idempotency_request = request.clone();
     idempotency_request.call.call_id = caller_call_id;
@@ -908,7 +942,10 @@ async fn execute_resident_call_at_with_context(
         idempotency_request,
         now,
         context.clone(),
-        execution_call_id,
+        super::idempotency::IdempotentExecutionOptions {
+            execution_call_id,
+            fingerprint_discriminator,
+        },
         move || {
             execute_resident_call_after_payload(
                 paths,
@@ -916,8 +953,11 @@ async fn execute_resident_call_at_with_context(
                 request,
                 inline_payload,
                 context,
-                overrides.effect_time,
-                overrides.post_mint_mutation,
+                ResidentExecutionOverrides {
+                    effect_time,
+                    post_mint_mutation,
+                    required_node_id,
+                },
             )
         },
     )
@@ -930,20 +970,30 @@ async fn execute_resident_call_after_payload(
     request: MctCallProtocolRequest,
     inline_payload: Option<Vec<u8>>,
     context: ResidentCallIngressContext,
-    effect_time_override: Option<Timestamp>,
-    post_mint_mutation: Option<AuthorityMutationRequestV1>,
+    overrides: ResidentExecutionOverrides,
 ) -> MctIrohCallHandlerResult {
     if ledger.path().is_none() {
         return MctIrohCallHandlerResult::failed("runtime unavailable");
     };
-    let authorization =
-        match authorize_resident_child(paths.clone(), ledger.clone(), request.call.clone()).await {
-            Ok(authorization) => authorization,
-            Err(error) => {
-                eprintln!("resident child authorization unavailable: {error}");
-                return receiver_authority_unavailable_before_effect();
-            }
-        };
+    let ResidentExecutionOverrides {
+        effect_time: effect_time_override,
+        post_mint_mutation,
+        required_node_id,
+    } = overrides;
+    let authorization = match authorize_resident_child_with_required_node(
+        paths.clone(),
+        ledger.clone(),
+        request.call.clone(),
+        required_node_id,
+    )
+    .await
+    {
+        Ok(authorization) => authorization,
+        Err(error) => {
+            eprintln!("resident child authorization unavailable: {error}");
+            return receiver_authority_unavailable_before_effect();
+        }
+    };
 
     match authorization {
         RouteDisposition::Denied {
