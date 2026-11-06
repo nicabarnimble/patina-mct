@@ -3904,10 +3904,12 @@ mod tests {
         .await;
         assert_eq!(status, 200, "{response}");
 
+        let mut next = request;
+        next.call.call_id = CallId::new("call-after-child-revoke").unwrap();
         let after = crate::resident::execute_resident_call(
             paths,
             ledger.clone(),
-            request,
+            next,
             crate::resident::ResidentPayloadIngress::local(None),
         )
         .await;
