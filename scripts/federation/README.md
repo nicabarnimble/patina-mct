@@ -70,20 +70,20 @@ git ls-files -z Cargo.toml Cargo.lock crates flake.nix flake.lock |
 ```
 
 On the configured builder, with the vendored Cargo source configuration already
-prepared, point to the exact previously accepted PR #107 component artifact and
-run:
+prepared, name the two immutable project snapshots and run:
 
 ```sh
-MCT_REPO_REPORT_COMPONENT=/absolute/private/mct-repo-report.wasm \
+MCT_REPO_REPORT_A_LOCK=/absolute/private/project-a/Cargo.lock \
+MCT_REPO_REPORT_B_LOCK=/absolute/private/project-b/Cargo.lock \
   bash scripts/federation/build.sh EXPECTED_BUILDER_HOST FULL_SOURCE_COMMIT \
   /absolute/shared-target /absolute/new-artifacts-directory
 ```
 
-The script checks hostname and source hashes, requires the pinned PR #107
-component digest, builds and tests the helper with the daemon, then packages the
-already-built component with the new native artifacts. `nix/federation-bundle.nix` adds pinned
-`nft` and `bpftool` utilities. Set `package` to the resulting immutable store
-path. The binaries are test-profile builds, not release/install claims.
+The script checks hostname and source hashes, builds and tests the helper and
+daemon, builds the `mct-repo-report` component once, and packages both immutable
+snapshots with those artifacts. `nix/federation-bundle.nix` adds pinned `nft`
+and `bpftool` utilities. Set `package` to the resulting immutable store path.
+The binaries are test-profile builds, not release/install claims.
 
 ## NIC-63 mesh job
 
@@ -102,6 +102,22 @@ to expire and submits one more repo-report call. Passing evidence requires B's
 ledger to record `toy_grant_expired` and no runtime start for that uncovered
 call. No `board.post` Toy is needed: the reused directory-read ToyGrant already
 provides the covered/uncovered authority boundary.
+
+## NIC-105 dependency drift report
+
+Run the canonical read/compute Child on both selected Mothers and compute the
+client-owned package/version drift:
+
+```sh
+node scripts/federation/drift-report.mjs \
+  --config /absolute/private/fleet.json \
+  --evidence /absolute/private/new-drift-evidence
+```
+
+The two mesh pieces carry exact Mother placement constraints, but normal route
+and Toy authority still decide whether they may run. Passing evidence requires
+one local inventory on A, one forwarded inventory on B, at least one real drift
+entry, and a later B `toy_grant_expired` denial with zero B runtime starts.
 
 ## Gates
 

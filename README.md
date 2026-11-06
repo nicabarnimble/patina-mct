@@ -93,10 +93,10 @@ records independent digest/evidence facts; it does not approve or assign the
 Child:
 
 ```bash
-"$MCT" artifacts stage /path/to/slate-build-output \
-  --manifest slate-manager.toml \
-  --component slate-manager.wasm \
-  --child slate-manager \
+"$MCT" artifacts stage /path/to/mct-repo-report-package \
+  --manifest child.toml \
+  --component mct-repo-report.wasm \
+  --child mct-repo-report \
   --version 0.2.0 \
   --children-dir ~/.mct/children \
   --state ~/.mct/state.sqlite \
@@ -105,16 +105,18 @@ Child:
 ```
 
 Approve only the exact acquisition-backed digest returned by staging, then
-grant the narrow Slate Toy authority. These commands currently use the
-owner-authenticated local administration path, not the planned iroh admin path.
+grant the reference Child directory-read authority for one project root. These
+commands currently use the owner-authenticated local administration path, not
+the planned iroh admin path.
 
 ```bash
-"$MCT" children approve slate-manager ~/.mct/children \
+"$MCT" children approve mct-repo-report ~/.mct/children \
   --artifact sha256:<digest> \
   --strict-integrity \
   --state ~/.mct/state.sqlite
 
-"$MCT" toys authorize-slate slate-manager /path/to/project \
+"$MCT" toys grant-directory-read mct-repo-report /path/to/project \
+  --expires-at 2099-01-01T00:00:00Z \
   --children-dir ~/.mct/children \
   --state ~/.mct/state.sqlite
 ```
@@ -201,6 +203,14 @@ Strict approval rejects missing or mismatched sidecars. A common packaging
 mistake is flattening the wasm file into the release root — keep the
 artifact at its package-relative path so the digests verify.
 
+The canonical starting point is a bounded operation: pure compute, or
+read/compute with only an exact directory-read grant. `mct-repo-report` is the
+reference read/compute Child. `h1-git-child`, `slate-manager`,
+`folder-watch-actor`, `watch-null-sink`, `mct-test-echo`, and inline WAT
+components are test-only compatibility, security, or ABI fixtures. Keep them
+for regression evidence; do not copy their broad manifests, lifecycle hooks,
+or synthetic operations into application guidance.
+
 ## Development
 
 ```bash
@@ -239,5 +249,7 @@ The `layer/` directory is the project's knowledge base:
   workspace is built under.
 - [`docs/DECISIONS.md`](docs/DECISIONS.md) — settled product decisions and
   their built, proposed, or deferred status.
+- [Children and Vision plan](docs/mct-vision-child-plan.md) — the accepted
+  planning source for the reference Child and multi-Vision pieces.
 - `layer/allium/` — frozen historical behavior maps retained for provenance;
   they are no longer a development gate or current authority source.
