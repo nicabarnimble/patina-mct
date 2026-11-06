@@ -28,12 +28,6 @@
     },
     {
       "check": "C2",
-      "step": "toy-grant-expiry-mandatory",
-      "reason": "toy-grant-without-expiry-admitted",
-      "owner": "NIC-125"
-    },
-    {
-      "check": "C2",
       "step": "day-key-approval-and-grant-chain",
       "reason": "blocked:governed-runtime-startup",
       "owner": "NIC-126"

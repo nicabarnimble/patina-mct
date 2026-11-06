@@ -21,7 +21,7 @@ export const PROBES = {
   'pi-installed-governed-mother': declared('probe-not-implemented'),
   'pi-call-within-budget': declared('probe-not-implemented'),
   'nic63-repo-report-on-pi': evidence('repoReportOnPi'),
-  'toy-grant-expiry-mandatory': cargo('mct-kernel', ['--lib'], 'toy::tests::done_c2_toy_grant_without_expiry_is_denied', 1, true),
+  'toy-grant-expiry-mandatory': cargo('mct-kernel', ['--lib'], 'toy::tests::done_c2_toy_grant_without_expiry_is_denied', 1),
   'day-key-approval-and-grant-chain': declared('probe-not-implemented'),
   'unix-socket-mutation-refused': declared('probe-not-implemented'),
   'hostile-sockets-on-governed-pi': declared('probe-not-implemented'),

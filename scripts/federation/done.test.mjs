@@ -80,10 +80,10 @@ test('today: every check is red or partly with a named reason and tracking is ex
 test('an untracked failure, a stale entry, or a changed reason is tracking drift', async () => {
   const untracked = todayResults(); untracked['nic63-two-mother-mesh-job'] = fail('evidence-two-mother-run-missing');
   assert.equal(evaluate(STEPS, (await planWith(untracked)).stepResults, tracked).exitCode, 2);
-  const stale = todayResults(); stale['toy-grant-expiry-mandatory'] = pass;
+  const stale = todayResults(); stale['signed-receipt-per-outcome'] = pass;
   const staleReport = evaluate(STEPS, (await planWith(stale)).stepResults, tracked);
   assert.equal(staleReport.exitCode, 2);
-  assert.deepEqual(staleReport.tracking.stale.map(entry => entry.step), ['toy-grant-expiry-mandatory']);
+  assert.deepEqual(staleReport.tracking.stale.map(entry => entry.step), ['signed-receipt-per-outcome', 'receipt-tamper-fails'], 'unblocking a step makes its blocked row stale too');
   const changed = todayResults(); changed['governed-runtime-startup'] = fail('governed-runtime-startup-failed');
   const changedReport = evaluate(STEPS, (await planWith(changed)).stepResults, tracked);
   assert.equal(changedReport.exitCode, 2);
