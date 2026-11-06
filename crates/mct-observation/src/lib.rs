@@ -5,6 +5,12 @@
 
 #![forbid(unsafe_code)]
 
+mod governed_runtime;
+pub use governed_runtime::{
+    GOVERNED_DIRECTORY_READ_ACTION, GOVERNED_DIRECTORY_READ_TOY_ID, GOVERNED_ROUTES,
+    GovernedChildStateV1, GovernedChildV1, GovernedRuntimeV1, directory_read_contract,
+    governed_route_scope,
+};
 mod passkey_admin;
 pub use passkey_admin::{PasskeyAdminCanonicalV1, PasskeyAdminFactV1, PasskeyGenesisSetupV1};
 mod admin_genesis;

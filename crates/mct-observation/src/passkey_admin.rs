@@ -16,6 +16,9 @@ pub struct PasskeyAdminFactV1 {
 pub struct PasskeyAdminCanonicalV1 {
     pub genesis: PasskeyAdminFactV1,
     pub state: PasskeyAdminStateV1,
+    /// Child-runtime authority written by governed commands.
+    #[serde(default, skip_serializing_if = "crate::GovernedRuntimeV1::is_empty")]
+    pub runtime: crate::GovernedRuntimeV1,
 }
 
 /// Host-only setup assertion, not deserializable request data. The producer must
@@ -152,14 +155,20 @@ fn transition(
         {
             return Err(denied("stale or wrong authority snapshot"));
         }
+        let state =
+            evaluate_passkey_admin_transition(Some(&prior.state), &fact.request, &fact.decided_at)
+                .map_err(denied)?;
+        let runtime = crate::governed_runtime::apply_governed_command(
+            &prior.runtime,
+            &state.mother_node_id,
+            &fact.request,
+            &fact.decided_at,
+        )
+        .map_err(denied)?;
         return Ok(PasskeyAdminCanonicalV1 {
             genesis: prior.genesis.clone(),
-            state: evaluate_passkey_admin_transition(
-                Some(&prior.state),
-                &fact.request,
-                &fact.decided_at,
-            )
-            .map_err(denied)?,
+            state,
+            runtime,
         });
     }
     let PasskeyAdminActionV1::Bootstrap { inventory_hash, .. } = &i.action else {
@@ -184,6 +193,7 @@ fn transition(
         genesis: fact.clone(),
         state: evaluate_passkey_admin_transition(None, &fact.request, &fact.decided_at)
             .map_err(denied)?,
+        runtime: crate::GovernedRuntimeV1::default(),
     })
 }
 pub(super) fn replay_fact(
