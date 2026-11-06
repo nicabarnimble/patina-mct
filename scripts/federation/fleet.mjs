@@ -659,10 +659,14 @@ export async function runSlice(config, slice, options = {}) {
 }
 
 export function sanitize(value, config) {
-  const replacements = [config.sshIdentity, ...config.hosts.flatMap(h => [h.ssh, h.address])].filter(nonempty).sort((a, b) => b.length - a.length);
+  const replacements = [
+    [config.runRoot, '[test-root]'],
+    [config.sshIdentity, '[redacted]'],
+    ...config.hosts.flatMap(h => [[h.ssh, '[redacted]'], [h.address, '[redacted]']]),
+  ].filter(([secret]) => nonempty(secret)).sort(([a], [b]) => b.length - a.length);
   const clean = item => {
     if (typeof item === 'string') {
-      for (const secret of replacements) item = item.replaceAll(secret, '[redacted]');
+      for (const [secret, replacement] of replacements) item = item.replaceAll(secret, replacement);
       return item.replace(/\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b/g, '[redacted-address]');
     }
     if (Array.isArray(item)) return item.map(clean);
