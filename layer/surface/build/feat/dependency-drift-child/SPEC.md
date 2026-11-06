@@ -8,33 +8,35 @@ related:
   - docs/mct-vision-child-plan.md
   - docs/plans/first-real-app.md
   - docs/nic63-mesh-job.md
+  - docs/nic105-dependency-drift.md
+  - layer/surface/build/feat/dependency-drift-child/EVIDENCE.md
   - layer/surface/build/feat/multi-mother-mesh-job/SPEC.md
   - crates/mct-repo-report/
   - scripts/federation/mesh-job.mjs
 exit_criteria:
   - id: canonical-read-compute-child
     text: mct-repo-report remains a bounded WIT-only read/compute Child with only the directory-read capability request and returns a complete bounded Cargo.lock package/version inventory.
-    checked: false
+    checked: true
     verify: cargo test -p mct-repo-report
   - id: client-owned-drift
     text: One authenticated mesh job runs the same Child on Mother A and Mother B and the client computes a versioned dependency drift result with at least one real package/version difference.
-    checked: false
+    checked: true
     verify: node --test scripts/federation/drift-report.test.mjs plus physical evidence
   - id: exact-execution-attribution
     text: Verified independent ledgers prove A's inventory ran only on A and B's inventory ran only on B.
-    checked: false
+    checked: true
     verify: physical evidence document plus canonical ledger summaries
   - id: expired-b-grant-denial
     text: After B's exact directory-read grant expires, a fresh B probe is denied by B with a typed expired-grant fact and zero B runtime starts.
-    checked: false
+    checked: true
     verify: physical evidence document plus canonical ledger summaries
   - id: build-once-delivery
     text: Native artifacts and the Child component are built once on nicamaster, packaged with both immutable snapshots in one signed closure, and imported on nicanode0 without Cargo or Nix compilation there.
-    checked: false
+    checked: true
     verify: build and deployment receipts in physical evidence
   - id: repository-gates
     text: The requested repository gates pass on the final diff.
-    checked: false
+    checked: true
     verify: cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && bash scripts/ci-tier0.sh specs && git diff --check
 ---
 
