@@ -70,16 +70,18 @@ git ls-files -z Cargo.toml Cargo.lock crates flake.nix flake.lock |
 ```
 
 On the configured builder, with the vendored Cargo source configuration already
-prepared, run:
+prepared, point to the exact previously accepted PR #107 component artifact and
+run:
 
 ```sh
-bash scripts/federation/build.sh EXPECTED_BUILDER_HOST FULL_SOURCE_COMMIT \
+MCT_REPO_REPORT_COMPONENT=/absolute/private/mct-repo-report.wasm \
+  bash scripts/federation/build.sh EXPECTED_BUILDER_HOST FULL_SOURCE_COMMIT \
   /absolute/shared-target /absolute/new-artifacts-directory
 ```
 
-The script checks hostname and source hashes, builds and tests the helper with
-the daemon, builds the `mct-repo-report` component once on the builder, then
-packages the already-built artifacts. `nix/federation-bundle.nix` adds pinned
+The script checks hostname and source hashes, requires the pinned PR #107
+component digest, builds and tests the helper with the daemon, then packages the
+already-built component with the new native artifacts. `nix/federation-bundle.nix` adds pinned
 `nft` and `bpftool` utilities. Set `package` to the resulting immutable store
 path. The binaries are test-profile builds, not release/install claims.
 

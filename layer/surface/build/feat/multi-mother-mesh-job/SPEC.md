@@ -28,7 +28,7 @@ exit_criteria:
     checked: false
     verify: physical evidence document plus canonical ledger summaries
   - id: build-once-delivery
-    text: The daemon, helper, mct-repo-report component, manifest, and input fixture are built once on nicamaster, packaged in one signed immutable closure, and imported on nicanode0 without Cargo or Nix compilation there.
+    text: The daemon and helper are built once on nicamaster; the exact previously accepted PR #107 mct-repo-report component is reused there with its pinned digest. Native artifacts, manifest, component, and input fixture are packaged in one signed immutable closure and imported on nicanode0 without Cargo or Nix compilation there.
     checked: false
     verify: package provenance and deployment receipts in physical evidence
   - id: repository-gates
