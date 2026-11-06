@@ -43,3 +43,5 @@ The command prints one line per check, with its steps beneath it, and writes
 
 Baseline results are recorded in
 [`docs/evidence/nic124-done-baseline/`](../evidence/nic124-done-baseline/).
+After NIC-125 (mandatory Toy-grant expiry), C2's expiry step passes:
+[`docs/evidence/nic125-done-after-expiry/`](../evidence/nic125-done-after-expiry/).
