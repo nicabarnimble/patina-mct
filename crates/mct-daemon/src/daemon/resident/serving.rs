@@ -2098,7 +2098,8 @@ mod tests {
             "expected_children_dir": authority_paths.2,
             "expected_state_path": authority_paths.3,
             "child_name": "resident-echo",
-            "secret_name": "phase-k-secret"
+            "secret_name": "phase-k-secret",
+            "expires_at": "2099-01-01T00:00:00Z"
         }))
         .unwrap();
         let request = [

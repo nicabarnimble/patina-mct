@@ -4607,7 +4607,8 @@ status = "active"
             "expected_children_dir": paths.children,
             "expected_state_path": paths.state,
             "child_name": "slate-manager",
-            "project_root": project
+            "project_root": project,
+            "expires_at": "2099-01-01T00:00:00Z"
         });
         let (toy_status, toy_report) =
             uds_json(&paths.uds, "POST", "/toys/authorize-slate", &toy_request).await;

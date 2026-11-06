@@ -721,7 +721,7 @@ mod tests {
         child: &mct_daemon::MctLoadedChild,
         grant_state: ToyGrantState,
         starts_at: Option<Timestamp>,
-        expires_at: Option<Timestamp>,
+        expires_at: Timestamp,
     ) -> AuthorityStateV1 {
         let contract = CanonicalToyContract {
             toy_id: ToyId::new("toy:test:logging").unwrap(),
@@ -758,7 +758,7 @@ mod tests {
             },
             constraints: ToyGrantConstraints {
                 starts_at,
-                expires_at,
+                expires_at: Some(expires_at),
                 max_uses: None,
                 max_duration_ms: None,
                 locality_required: true,
@@ -1093,7 +1093,12 @@ mod tests {
             std::slice::from_ref(&child),
             Timestamp::new("2026-07-09T00:01:00Z").unwrap(),
             41,
-            logging_authority_state(&child, ToyGrantState::Active, None, None),
+            logging_authority_state(
+                &child,
+                ToyGrantState::Active,
+                None,
+                Timestamp::new("2099-01-01T00:00:00Z").unwrap(),
+            ),
         )
         .unwrap();
         let echoes = [0, 41, 42, u64::MAX];
@@ -1155,7 +1160,12 @@ mod tests {
             std::slice::from_ref(&child),
             Timestamp::new("2026-07-09T00:01:00Z").unwrap(),
             73,
-            logging_authority_state(&child, ToyGrantState::Active, None, None),
+            logging_authority_state(
+                &child,
+                ToyGrantState::Active,
+                None,
+                Timestamp::new("2099-01-01T00:00:00Z").unwrap(),
+            ),
         )
         .unwrap();
         let mut call = fixture.call.clone();
@@ -1178,12 +1188,8 @@ mod tests {
         child.requested_toys = vec!["logging".into()];
         let starts_at = Timestamp::new("2026-07-09T12:00:00Z").unwrap();
         let expires_at = Timestamp::new("2026-07-09T13:00:00Z").unwrap();
-        let authority_state = logging_authority_state(
-            &child,
-            ToyGrantState::Active,
-            Some(starts_at),
-            Some(expires_at),
-        );
+        let authority_state =
+            logging_authority_state(&child, ToyGrantState::Active, Some(starts_at), expires_at);
         let mut call = fixture.call.clone();
         call.authority_context = AuthorityContextSnapshot {
             policy_revision: u64::MAX,
@@ -1219,6 +1225,117 @@ mod tests {
         assert_eq!(outcomes, ["denied", "allowed", "denied"]);
     }
 
+    fn route_from_replayed_logging_grant(
+        expires_at: Option<Timestamp>,
+        evaluated_at: &str,
+    ) -> RouteDisposition {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger_path = dir.path().join("observations.jsonl");
+        let config_path = dir.path().join("config.json");
+        let state_path = dir.path().join("state.sqlite");
+        let children_dir = dir.path().join("children");
+        write_resident_wasm_child(&children_dir);
+        let manifest_path = children_dir.join("resident-echo").join("child.toml");
+        let manifest = std::fs::read_to_string(&manifest_path)
+            .unwrap()
+            .replace("toys = []", "toys = [\"logging\"]");
+        std::fs::write(&manifest_path, manifest.as_bytes()).unwrap();
+        write_sha256_sidecar(&manifest_path, manifest.as_bytes());
+        let child = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone())).children
+            [0]
+        .clone();
+        let store = MctDaemonConfigStore::new(&config_path);
+        store
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity.hex"),
+            )
+            .unwrap();
+        store
+            .approve_and_assign_loaded_child(&child, MctOperatorChildScope::default())
+            .unwrap();
+        let mut canonical_state = logging_authority_state(
+            &child,
+            ToyGrantState::Active,
+            None,
+            Timestamp::new("2099-01-01T00:00:00Z").unwrap(),
+        );
+        for grant in canonical_state.toy_grants.values_mut() {
+            grant.constraints.expires_at = expires_at.clone();
+        }
+        let mut ledger =
+            JsonlObservationLedger::open_authority(&ledger_path, "ledger-local", "local-mct")
+                .unwrap();
+        let import = ledger.execute_legacy_authority_import(
+            LegacyAuthorityImportRequestV1 {
+                schema: "mct-legacy-authority-import-request/v1".into(),
+                import_id: "expiry-replay-import".into(),
+                expected_mother_node_id: "local-mct".into(),
+                expected_ledger_id: "ledger-local".into(),
+                expected_config_authority_hash: authority_state_hash(&AuthorityStateV1::default())
+                    .unwrap(),
+                expected_sqlite_authority_hash: authority_state_hash(&canonical_state).unwrap(),
+                confirmation: mct_observation::LEGACY_AUTHORITY_IMPORT_CONFIRMATION_V1.into(),
+            },
+            "os-uid:501".into(),
+            canonical_state,
+            "2026-07-09T00:00:00Z".into(),
+        );
+        assert!(matches!(
+            import,
+            AuthorityMutationResultV1::CommittedProjectionPending { .. }
+        ));
+        MctRuntimeStateStore::open(&state_path)
+            .unwrap()
+            .rebuild_authority_projection(&ledger.entries().unwrap())
+            .unwrap();
+        let snapshot = mct_daemon::local_execution_authority_snapshot_at(
+            &ledger_path,
+            &config_path,
+            &children_dir,
+            &state_path,
+            Ok(Timestamp::new(evaluated_at).unwrap()),
+        )
+        .unwrap();
+        let mut call = resident_test_call(TraceId::new("trace-expiry-replay").unwrap());
+        call.authority_context
+            .expected_receiver_grants_authority
+            .generation = u64::MAX;
+        authorize_resident_child_from_snapshot(&snapshot, vec![child], &call).unwrap()
+    }
+
+    #[test]
+    fn replayed_toy_grant_expiry_decides_the_route_before_any_runtime() {
+        let denied_reason = |disposition: RouteDisposition| match disposition {
+            RouteDisposition::Denied { observations, .. } => {
+                assert!(
+                    observations
+                        .iter()
+                        .all(|o| o.kind != ObservationKind::RuntimeExecutionStarted)
+                );
+                serde_json::to_string(&observations).unwrap()
+            }
+            _ => panic!("route must be denied"),
+        };
+        let open_ended = denied_reason(route_from_replayed_logging_grant(
+            None,
+            "2026-07-09T00:01:00Z",
+        ));
+        assert!(open_ended.contains("MissingExpiry"), "{open_ended}");
+        let expired = denied_reason(route_from_replayed_logging_grant(
+            Some(Timestamp::new("2026-07-09T00:00:30Z").unwrap()),
+            "2026-07-09T00:01:00Z",
+        ));
+        assert!(expired.contains("ExpiredGrant"), "{expired}");
+        assert!(matches!(
+            route_from_replayed_logging_grant(
+                Some(Timestamp::new("2026-07-09T00:30:00Z").unwrap()),
+                "2026-07-09T00:01:00Z",
+            ),
+            RouteDisposition::Local { .. }
+        ));
+    }
+
     #[test]
     fn enveloped_required_toy_revocation_denies_next_route_regardless_of_echo() {
         let dir = tempfile::tempdir().unwrap();
@@ -1245,7 +1362,12 @@ mod tests {
         store
             .approve_and_assign_loaded_child(&child, MctOperatorChildScope::default())
             .unwrap();
-        let canonical_state = logging_authority_state(&child, ToyGrantState::Active, None, None);
+        let canonical_state = logging_authority_state(
+            &child,
+            ToyGrantState::Active,
+            None,
+            Timestamp::new("2099-01-01T00:00:00Z").unwrap(),
+        );
         let mut ledger =
             JsonlObservationLedger::open_authority(&ledger_path, "ledger-local", "local-mct")
                 .unwrap();

@@ -703,3 +703,16 @@ into the new passkey profile.
   permitting legacy roots to mint new-profile authority.
 - **Proof:** deterministic automated tests and repository quality gates. No new
   temporary receipt-hash tables or long evidence essays.
+
+### D-59 ToyGrant expiry is mandatory
+
+- **Owner decision:** 2026-11-01, recorded in [design/board-toygrant.md](design/board-toygrant.md#decided-policy);
+  enforced by [NIC-125](https://linear.app/nicabar/issue/NIC-125) under the frozen NIC-123 C2 check.
+- **Status:** built.
+- **Decision:** a ToyGrant with no `expires_at` denies with `MissingExpiry`. A filesystem
+  (`wasi:filesystem/*`) grant with no `resource_id` denies with `MissingResource`. Both are
+  decided in the kernel before any token or effect, on the call and snapshot paths alike.
+- **Lifetime:** independent of the issuing key. `toys authorize-slate` and `authorize-secret`
+  default to 30 days and accept `--expires-at`; the wire request always carries the exact value.
+- **Compatibility:** existing open-ended grants replay unchanged and deny at evaluation (D-02).
+  Re-issue them with an expiry. Nothing is rewritten in the ledger.

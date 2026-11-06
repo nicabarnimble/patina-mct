@@ -1761,6 +1761,7 @@ pub(super) struct ToyAuthorizeSlateRequest {
     pub(super) expected_state_path: PathBuf,
     pub(super) child_name: String,
     pub(super) project_root: PathBuf,
+    pub(super) expires_at: Timestamp,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -1772,6 +1773,7 @@ pub(super) struct ToyAuthorizeSecretRequest {
     pub(super) expected_state_path: PathBuf,
     pub(super) child_name: String,
     pub(super) secret_name: String,
+    pub(super) expires_at: Timestamp,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -1846,7 +1848,7 @@ fn prepare_administrative_mutation(
                 state_path: state_path.to_path_buf(),
                 child_name: request.child_name,
                 contracts: slate_toy_contracts(),
-                grants: slate_toy_grants_for_child(&child, &project_root),
+                grants: slate_toy_grants_for_child(&child, &project_root, &request.expires_at),
             })
         }
         "/toys/authorize-secret" => {
@@ -1865,7 +1867,11 @@ fn prepare_administrative_mutation(
                 state_path: state_path.to_path_buf(),
                 child_name: request.child_name,
                 contracts: vec![mct_secrets_toy_contract()],
-                grants: vec![secret_toy_grant_for_child(&child, &request.secret_name)],
+                grants: vec![secret_toy_grant_for_child(
+                    &child,
+                    &request.secret_name,
+                    &request.expires_at,
+                )],
             })
         }
         "/pando/record" => {
@@ -4199,6 +4205,25 @@ mod tests {
             ledger.clone(),
         );
 
+        let ledger_before = std::fs::read(&ledger_path).unwrap();
+        let (open_ended_status, open_ended) = post_mutation(
+            Arc::clone(&listener),
+            handler.clone(),
+            &socket_path,
+            "/toys/authorize-secret",
+            serde_json::json!({
+                "mutation_id": "test-authorize-secret-without-expiry",
+                "expected_config_path": config_path,
+                "expected_children_dir": children_dir,
+                "expected_state_path": state_path,
+                "child_name": "resident-echo",
+                "secret_name": "api-token-name"
+            }),
+        )
+        .await;
+        assert_eq!(open_ended_status, 400, "{open_ended}");
+        assert_eq!(std::fs::read(&ledger_path).unwrap(), ledger_before);
+
         for (path, body) in [
             (
                 "/toys/authorize-slate",
@@ -4208,7 +4233,8 @@ mod tests {
                     "expected_children_dir": children_dir,
                     "expected_state_path": state_path,
                     "child_name": "resident-echo",
-                    "project_root": dir.path()
+                    "project_root": dir.path(),
+                    "expires_at": "2099-01-01T00:00:00Z"
                 }),
             ),
             (
@@ -4219,7 +4245,8 @@ mod tests {
                     "expected_children_dir": children_dir,
                     "expected_state_path": state_path,
                     "child_name": "resident-echo",
-                    "secret_name": "api-token-name"
+                    "secret_name": "api-token-name",
+                    "expires_at": "2099-01-01T00:00:00Z"
                 }),
             ),
             (
@@ -4248,7 +4275,14 @@ mod tests {
         ledger.close().await;
 
         let state = MctRuntimeStateStore::open(&state_path).unwrap();
-        assert_eq!(state.toy_grant_snapshots().unwrap().len(), 5);
+        let grants = state.toy_grant_snapshots().unwrap();
+        assert_eq!(grants.len(), 5);
+        let requested = Timestamp::new("2099-01-01T00:00:00Z").unwrap();
+        assert!(
+            grants
+                .iter()
+                .all(|grant| grant.constraints.expires_at.as_ref() == Some(&requested))
+        );
         let ledger_text = std::fs::read_to_string(ledger_path).unwrap();
         assert!(ledger_text.contains(mct_observation::AUTHORITY_FACT_DETAIL_PREFIX));
         assert!(ledger_text.contains("toy_grant_put"));
@@ -4359,7 +4393,8 @@ mod tests {
                     "expected_children_dir": children_dir,
                     "expected_state_path": state_path,
                     "child_name": "resident-echo",
-                    "project_root": dir.path()
+                    "project_root": dir.path(),
+                    "expires_at": "2099-01-01T00:00:00Z"
                 }),
             ),
             (
@@ -4370,7 +4405,8 @@ mod tests {
                     "expected_children_dir": children_dir,
                     "expected_state_path": state_path,
                     "child_name": "resident-echo",
-                    "secret_name": "phase-i-secret-name"
+                    "secret_name": "phase-i-secret-name",
+                    "expires_at": "2099-01-01T00:00:00Z"
                 }),
             ),
             (
@@ -4766,6 +4802,7 @@ mod tests {
             expected_state_path: state.clone(),
             child_name: "resident-echo".into(),
             secret_name: "credential-name".into(),
+            expires_at: Timestamp::new("2099-01-01T00:00:00Z").unwrap(),
         };
         execute_offline_administrative_mutation(
             &config,
@@ -4832,6 +4869,7 @@ mod tests {
             expected_state_path: state_path.clone(),
             child_name: "resident-echo".into(),
             secret_name: "credential-name".into(),
+            expires_at: Timestamp::new("2099-01-01T00:00:00Z").unwrap(),
         };
         let (status, _) = post_mutation(
             listener,
@@ -5023,7 +5061,11 @@ mod tests {
             .unwrap();
         let legacy = MctRuntimeStateStore::open(&state_path).unwrap();
         let contract = mct_secrets_toy_contract();
-        let grant = secret_toy_grant_for_child(&child, "legacy-secret");
+        let grant = secret_toy_grant_for_child(
+            &child,
+            "legacy-secret",
+            &Timestamp::new("2099-01-01T00:00:00Z").unwrap(),
+        );
         legacy.upsert_toy_contract(&contract).unwrap();
         legacy.upsert_toy_grant_snapshot(&grant).unwrap();
         drop(legacy);
@@ -5042,7 +5084,8 @@ mod tests {
             "expected_children_dir": children_dir,
             "expected_state_path": state_path,
             "child_name": "resident-echo",
-            "secret_name": "legacy-secret"
+            "secret_name": "legacy-secret",
+            "expires_at": "2099-01-01T00:00:00Z"
         });
         let (blocked_status, blocked) = post_mutation(
             Arc::clone(&listener),
