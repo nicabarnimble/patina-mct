@@ -66,7 +66,40 @@ enum Request {
         destination: u32,
         label: String,
     },
+    ProvisionRepoReport {
+        package: PathBuf,
+    },
+    GrantRepoReport {
+        caller_node: String,
+        mutation_id: String,
+        expires_at: String,
+    },
+    MeshJob {
+        job_id: String,
+        pieces: Vec<MeshJobPiece>,
+    },
+    CallTarget {
+        call_id: String,
+        payload_json: String,
+        target: Target,
+    },
     Verify {},
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Target {
+    namespace: String,
+    interface_name: String,
+    function_name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MeshJobPiece {
+    piece_id: String,
+    payload_json: String,
+    target: Target,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -107,7 +140,14 @@ struct Host {
     endpoint_id: Option<String>,
     checkpoint: Option<Checkpoint>,
     recovery_required: bool,
+    repo_report: Option<RepoReportFixture>,
     _ownership_lock: fs::File,
+}
+
+struct RepoReportFixture {
+    data_root: PathBuf,
+    input_sha256: String,
+    artifact_id: String,
 }
 
 fn validate_name(value: &str) -> Result<()> {
@@ -192,6 +232,48 @@ fn validate_index(index: u32) -> Result<()> {
     Ok(())
 }
 
+fn validate_target(target: &Target) -> Result<()> {
+    for field in [
+        &target.namespace,
+        &target.interface_name,
+        &target.function_name,
+    ] {
+        ensure!(
+            !field.trim().is_empty() && field.len() <= 256,
+            "invalid target field"
+        );
+    }
+    Ok(())
+}
+
+fn validated_payload(payload_json: &str) -> Result<&[u8]> {
+    ensure!(payload_json.len() <= 32 * 1024, "payload too large");
+    ensure!(
+        serde_json::from_str::<Value>(payload_json)?.is_array(),
+        "payload must be a JSON array"
+    );
+    Ok(payload_json.as_bytes())
+}
+
+fn read_bounded_regular(path: &Path, max: usize) -> Result<Vec<u8>> {
+    validate_absolute(path)?;
+    let metadata = fs::symlink_metadata(path)?;
+    ensure!(
+        metadata.file_type().is_file(),
+        "fixture path is not a regular file"
+    );
+    ensure!(
+        metadata.len() <= max as u64,
+        "fixture file exceeds size bound"
+    );
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    fs::File::open(path)?
+        .take((max + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    ensure!(bytes.len() <= max, "fixture file exceeds size bound");
+    Ok(bytes)
+}
+
 fn sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
@@ -218,6 +300,23 @@ fn file_sha256(file: fs::File) -> Result<String> {
         "unexpected SHA256 output"
     );
     Ok(digest.to_owned())
+}
+
+fn decode_result_payload(reply: &mut Value) -> Result<()> {
+    let decoded = match reply.get("inline_result_payload_base64") {
+        Some(Value::String(encoded)) => serde_json::from_slice::<Value>(&BASE64.decode(encoded)?)?,
+        Some(Value::Null) => Value::Null,
+        _ => bail!("call response has malformed or missing result payload"),
+    };
+    ensure!(
+        reply.get("outcome").is_some_and(Value::is_string),
+        "call response has no outcome"
+    );
+    reply
+        .as_object_mut()
+        .context("call response must be an object")?
+        .insert("decoded_result".into(), decoded);
+    Ok(())
 }
 
 fn hash_reader(mut reader: impl Read) -> Result<(u64, String)> {
@@ -361,15 +460,25 @@ fn provenance(detail: &str, node: &str) -> Result<BTreeMap<String, String>> {
     Ok(markers)
 }
 
-fn retain_observation(kind: ObservationKind, has_markers: bool, has_correlation: bool) -> bool {
+fn retain_observation(
+    kind: ObservationKind,
+    has_markers: bool,
+    has_correlation: bool,
+    has_mesh_job_detail: bool,
+) -> bool {
     has_markers
         || has_correlation
+        || has_mesh_job_detail
         || matches!(
             kind,
             ObservationKind::RuntimeExecutionStarted
                 | ObservationKind::RuntimeExecutionCompleted
                 | ObservationKind::RuntimeExecutionFailed
                 | ObservationKind::RuntimeExecutionTimedOut
+                | ObservationKind::ToyGrantAllowed
+                | ObservationKind::ToyGrantDenied
+                | ObservationKind::ToyGrantExpired
+                | ObservationKind::ToyGrantRevoked
                 | ObservationKind::PeerAdmitted
                 | ObservationKind::PeerRejected
                 | ObservationKind::PeerHelloReceived
@@ -517,6 +626,7 @@ impl Host {
             endpoint_id: None,
             checkpoint: None,
             recovery_required: false,
+            repo_report: None,
             _ownership_lock: ownership_lock,
         })
     }
@@ -753,25 +863,133 @@ impl Host {
         )
     }
 
-    fn call(&mut self, destination: u32, label: &str) -> Result<Value> {
+    fn provision_repo_report(&mut self, package: &Path) -> Result<Value> {
         self.require_running()?;
-        validate_index(destination)?;
-        validate_name(label)?;
+        ensure!(
+            self.repo_report.is_none(),
+            "repo-report fixture already provisioned"
+        );
+        validate_absolute(package)?;
+        let component =
+            read_bounded_regular(&package.join("share/mct-repo-report.wasm"), 2 * 1024 * 1024)?;
+        let manifest = read_bounded_regular(&package.join("share/child.toml"), 256 * 1024)?;
+        let input = read_bounded_regular(&package.join("share/Cargo.lock"), 2 * 1024 * 1024)?;
+        let source = auxiliary_path(&self.root, "repo-source");
+        let data_root = auxiliary_path(&self.root, "repo-data");
+        private_fs::ensure_directory(&source)?;
+        private_fs::ensure_directory(&data_root)?;
+        for (path, bytes) in [
+            (source.join("mct-repo-report.wasm"), component.as_slice()),
+            (source.join("child.toml"), manifest.as_slice()),
+            (data_root.join("Cargo.lock"), input.as_slice()),
+        ] {
+            let mut file = private_fs::create_new(&path)?;
+            file.write_all(bytes)?;
+            file.sync_all()?;
+        }
+        let stage = self.request("POST", "/artifacts/stage", Some(&json!({
+            "source_root": source, "manifest_path": "child.toml", "component_path": "mct-repo-report.wasm",
+            "claimed_child_name": "mct-repo-report", "claimed_artifact_version": "0.1.0",
+            "expected_digest": format!("blake3:{}", blake3::hash(&component).to_hex()),
+            "expected_manifest_digest": format!("sha256:{}", sha256(&manifest)),
+            "standing_source_authority_id": null, "claimed_publisher": null, "require_source_sidecars": false,
+            "children_dir": self.root.join("children"), "state_path": self.root.join("state.sqlite")
+        })), CONTROL_TIMEOUT)?;
+        ensure!(
+            stage["verification_outcome"] == "verified",
+            "repo-report artifact staging was not verified"
+        );
+        let artifact_id = stage["artifact_id"]
+            .as_str()
+            .context("repo-report staging response has no artifact ID")?
+            .to_owned();
+        let approval = self.request("POST", "/children/approve", Some(&json!({
+            "expected_config_path": self.root.join("config.json"), "expected_children_dir": self.root.join("children"),
+            "expected_state_path": self.root.join("state.sqlite"), "expected_artifact_id": artifact_id,
+            "child_name": "mct-repo-report", "strict_integrity": true
+        })), CONTROL_TIMEOUT)?;
+        ensure!(
+            approval["approval_state"] == "approved",
+            "repo-report Child approval was not approved"
+        );
+        let input_sha256 = sha256(&input);
+        self.repo_report = Some(RepoReportFixture {
+            data_root: data_root.clone(),
+            input_sha256: input_sha256.clone(),
+            artifact_id: artifact_id.clone(),
+        });
+        Ok(json!({
+            "artifact_id": artifact_id,
+            "input_sha256": input_sha256,
+            "data_root": data_root,
+            "verification_outcome": stage["verification_outcome"],
+            "approval_state": approval["approval_state"]
+        }))
+    }
+
+    fn grant_repo_report(
+        &mut self,
+        caller_node: &str,
+        mutation_id: &str,
+        expires_at: &str,
+    ) -> Result<Value> {
+        self.require_running()?;
+        validate_name(caller_node)?;
+        validate_name(mutation_id)?;
+        let fixture = self
+            .repo_report
+            .as_ref()
+            .context("repo-report fixture is not provisioned")?;
+        let expires = expires_at.parse::<jiff::Timestamp>()?;
+        ensure!(
+            expires > jiff::Timestamp::now(),
+            "repo-report grant expiry is not in the future"
+        );
+        let response = self.request(
+            "POST",
+            "/watch/supporting-grant",
+            Some(&json!({
+                "caller_node_id": caller_node,
+                "mutation_id": mutation_id,
+                "expected_config_path": self.root.join("config.json"),
+                "expected_children_dir": self.root.join("children"),
+                "expected_state_path": self.root.join("state.sqlite"),
+                "child_name": "mct-repo-report",
+                "expires_at": expires_at,
+                "grant": {"kind": "directory_read", "canonical_root": fixture.data_root}
+            })),
+            CONTROL_TIMEOUT,
+        )?;
+        let grants = response["grants"]
+            .as_array()
+            .context("repo-report grant response has no grants")?;
+        ensure!(
+            grants.len() == 1 && grants[0]["grant_state"] == "active",
+            "repo-report grant was not active"
+        );
+        Ok(json!({
+            "expires_at": expires_at,
+            "input_sha256": fixture.input_sha256,
+            "artifact_id": fixture.artifact_id,
+            "grant": grants[0],
+            "mutation_result": response["mutation_result"]
+        }))
+    }
+
+    fn submit_call(&mut self, id: &str, payload_json: &str, target: &Target) -> Result<Value> {
+        self.require_running()?;
+        validate_name(id)?;
+        validate_target(target)?;
+        let payload = validated_payload(payload_json)?;
         let identity = self.identity()?;
         let authority = self.request("GET", "/receiver-authority", None, CONTROL_TIMEOUT)?;
-        let mut random = [0u8; 16];
-        getrandom::fill(&mut random)
-            .map_err(|e| anyhow::anyhow!("call ID randomness unavailable: {e}"))?;
-        let nonce: String = random.iter().map(|b| format!("{b:02x}")).collect();
-        let id = format!("{}-to-{destination}-{label}-{nonce}", self.node);
         let trace_id = format!("trace-{id}");
         let deadline = jiff::Timestamp::now()
-            .checked_add(jiff::SignedDuration::from_secs(20))?
+            .checked_add(jiff::SignedDuration::from_secs(90))?
             .to_string();
-        let payload = b"[41]";
         let mut reply = self.request("POST", "/calls", Some(&json!({
             "protocol_request_id": format!("proto-{id}"), "call_id": id,
-            "target": {"namespace": format!("patina:fleet-n{destination}"), "interface_name": "work@0.1.0", "function_name": "step"},
+            "target": target,
             "payload_metadata": {"data_classification": "public", "size_bytes": payload.len(), "contains_secret_scoped_material": false},
             "authority_context": {"policy_revision": identity.policy_revision, "expected_receiver_grants_authority": authority, "vision_policy_revision": 1},
             "deadline": deadline,
@@ -779,23 +997,81 @@ impl Host {
             "payload": {"payload_kind": "inline_payload", "inline_payload_ref": format!("payload-{id}"), "content_type": "application/json", "size_bytes": payload.len(), "blake3_digest_hex": blake3::hash(payload).to_hex().to_string()},
             "inline_payload_base64": BASE64.encode(payload), "idempotency_key": format!("key-{id}")
         })), CALL_EXCHANGE_TIMEOUT)?;
-        let decoded = match reply.get("inline_result_payload_base64") {
-            Some(Value::String(encoded)) => {
-                serde_json::from_slice::<Value>(&BASE64.decode(encoded)?)?
-            }
-            Some(Value::Null) => Value::Null,
-            _ => bail!("call response has malformed or missing result payload"),
-        };
-        ensure!(
-            reply.get("outcome").is_some_and(Value::is_string),
-            "call response has no outcome"
-        );
+        decode_result_payload(&mut reply)?;
         let object = reply
             .as_object_mut()
             .context("call response must be an object")?;
-        object.insert("decoded_result".into(), decoded);
         object.insert("submitted_call_id".into(), json!(id));
         object.insert("submitted_trace_id".into(), json!(trace_id));
+        Ok(reply)
+    }
+
+    fn call(&mut self, destination: u32, label: &str) -> Result<Value> {
+        validate_index(destination)?;
+        validate_name(label)?;
+        let mut random = [0u8; 16];
+        getrandom::fill(&mut random)
+            .map_err(|e| anyhow::anyhow!("call ID randomness unavailable: {e}"))?;
+        let nonce: String = random.iter().map(|b| format!("{b:02x}")).collect();
+        let id = format!("{}-to-{destination}-{label}-{nonce}", self.node);
+        self.submit_call(
+            &id,
+            "[41]",
+            &Target {
+                namespace: format!("patina:fleet-n{destination}"),
+                interface_name: "work@0.1.0".into(),
+                function_name: "step".into(),
+            },
+        )
+    }
+
+    fn submit_mesh_job(&mut self, job_id: &str, pieces: &[MeshJobPiece]) -> Result<Value> {
+        self.require_running()?;
+        validate_name(job_id)?;
+        ensure!(
+            (2..=16).contains(&pieces.len()),
+            "mesh job piece count is outside the supported bound"
+        );
+        let identity = self.identity()?;
+        let authority = self.request("GET", "/receiver-authority", None, CONTROL_TIMEOUT)?;
+        let deadline = jiff::Timestamp::now()
+            .checked_add(jiff::SignedDuration::from_secs(90))?
+            .to_string();
+        let mut seen = std::collections::BTreeSet::new();
+        let piece_values = pieces
+            .iter()
+            .map(|piece| {
+                validate_name(&piece.piece_id)?;
+                ensure!(seen.insert(piece.piece_id.clone()), "duplicate mesh job piece id");
+                validate_target(&piece.target)?;
+                let payload = validated_payload(&piece.payload_json)?;
+                Ok(json!({
+                    "piece_id": piece.piece_id,
+                    "target": piece.target,
+                    "payload_metadata": {"data_classification": "public", "size_bytes": payload.len(), "contains_secret_scoped_material": false},
+                    "payload": {"payload_kind": "inline_payload", "inline_payload_ref": format!("payload-{job_id}-{}", piece.piece_id), "content_type": "application/json", "size_bytes": payload.len(), "blake3_digest_hex": blake3::hash(payload).to_hex().to_string()},
+                    "inline_payload_base64": BASE64.encode(payload)
+                }))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut reply = self.request("POST", "/calls", Some(&json!({
+            "job_id": job_id,
+            "authority_context": {"policy_revision": identity.policy_revision, "expected_receiver_grants_authority": authority, "vision_policy_revision": 1},
+            "deadline": deadline,
+            "trace_context": {"trace_id": format!("trace-{job_id}"), "span_id": format!("span-{job_id}")},
+            "pieces": piece_values
+        })), CALL_EXCHANGE_TIMEOUT)?;
+        ensure!(reply["job_id"] == job_id, "mesh job response ID mismatch");
+        let returned = reply["pieces"]
+            .as_array_mut()
+            .context("mesh job response has no pieces")?;
+        ensure!(
+            returned.len() == pieces.len(),
+            "mesh job response piece count mismatch"
+        );
+        for piece in returned {
+            decode_result_payload(piece)?;
+        }
         Ok(reply)
     }
 
@@ -850,8 +1126,13 @@ impl Host {
                     "peer correlation reuses caller call ID"
                 );
             }
-            let relevant =
-                retain_observation(observation.kind, !markers.is_empty(), correlation.is_some());
+            let raw_detail = observation.detail_ref.as_deref().unwrap_or("");
+            let relevant = retain_observation(
+                observation.kind,
+                !markers.is_empty(),
+                correlation.is_some(),
+                raw_detail.contains("local_mesh_job_"),
+            );
             if relevant {
                 let detail = observation
                     .detail_ref
@@ -869,6 +1150,8 @@ impl Host {
                                     ))
                                 || (matches!(key, "remote_reply" | "remote_reason")
                                     && observation.kind == ObservationKind::PeerCallReplied)
+                                || key == "toy_grant_reason"
+                                || key.starts_with("local_mesh_job_")
                         })
                     })
                     .collect::<Vec<_>>()
@@ -963,6 +1246,18 @@ fn dispatch(host: &mut Option<Host>, request: Request) -> Result<Value> {
                     serde_json::to_value(config.peers).map_err(Into::into)
                 }
                 Request::Call { destination, label } => host.call(destination, &label),
+                Request::ProvisionRepoReport { package } => host.provision_repo_report(&package),
+                Request::GrantRepoReport {
+                    caller_node,
+                    mutation_id,
+                    expires_at,
+                } => host.grant_repo_report(&caller_node, &mutation_id, &expires_at),
+                Request::MeshJob { job_id, pieces } => host.submit_mesh_job(&job_id, &pieces),
+                Request::CallTarget {
+                    call_id,
+                    payload_json,
+                    target,
+                } => host.submit_call(&call_id, &payload_json, &target),
                 Request::Verify {} => host.verify(),
                 _ => unreachable!("handled before requiring initialization"),
             }
@@ -1300,17 +1595,31 @@ mod tests {
             ObservationKind::RuntimeExecutionFailed,
             ObservationKind::RuntimeExecutionTimedOut,
         ] {
-            assert!(retain_observation(kind, false, false));
+            assert!(retain_observation(kind, false, false, false));
         }
         assert!(!retain_observation(
             ObservationKind::CallConstructed,
+            false,
             false,
             false
         ));
         assert!(retain_observation(
             ObservationKind::CallConstructed,
             false,
+            true,
+            false
+        ));
+        assert!(retain_observation(
+            ObservationKind::CallConstructed,
+            false,
+            false,
             true
+        ));
+        assert!(retain_observation(
+            ObservationKind::ToyGrantExpired,
+            false,
+            false,
+            false
         ));
     }
 

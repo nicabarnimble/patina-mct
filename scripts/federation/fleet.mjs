@@ -569,6 +569,7 @@ export async function createFleet(input, slice = 'two', options = {}) {
       assert.equal(provision?.verification_outcome, 'verified', 'fixture was not verified');
       assert.equal(provision?.approval_state, 'approved', 'fixture was not approved');
       fleet.emit('provisioned', { node: host.node, root: host.root });
+      if (options.provisionHost) await options.provisionHost(fleet, host);
     }
     assert.equal(new Set(hosts.map(h => h.endpoint)).size, hosts.length, 'duplicate endpoint identities');
     for (const receiver of hosts) for (const caller of hosts.filter(h => h !== receiver)) {

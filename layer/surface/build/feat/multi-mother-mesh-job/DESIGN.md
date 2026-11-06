@@ -82,7 +82,7 @@ Reuse two landed fixtures rather than adding a Toy:
 
 Package the repo-report component, manifest, and Cargo.lock snapshot into the federation test closure built on nicamaster. The helper copies the immutable fixture into its private run-owned data root, stages the Child through the real artifact path, approves it, and issues the caller-scoped supporting grant through the real canonical authority mutation path.
 
-The grant expiry is chosen only after peer setup and publication readiness. The controller records the exact expiry, completes the covered job before it, waits until Mother time is past it, and sends the uncovered probe. The ledger, not wall-clock assumption alone, must show `ToyGrantDenied` and zero execution.
+The grant expiry is chosen only after peer setup and publication readiness. The controller records the exact expiry, completes the covered job before it, waits until Mother time is past it, and sends the uncovered probe. The ledger, not wall-clock assumption alone, must show the typed `ToyGrantExpired` refusal and zero execution.
 
 ## Test order
 

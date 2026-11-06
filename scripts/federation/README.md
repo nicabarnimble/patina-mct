@@ -78,9 +78,28 @@ bash scripts/federation/build.sh EXPECTED_BUILDER_HOST FULL_SOURCE_COMMIT \
 ```
 
 The script checks hostname and source hashes, builds and tests the helper with
-the daemon, then packages the already-built artifacts. `nix/federation-bundle.nix`
-adds pinned `nft` and `bpftool` utilities. Set `package` to the resulting immutable
-store path. The binaries are test-profile builds, not release/install claims.
+the daemon, builds the `mct-repo-report` component once on the builder, then
+packages the already-built artifacts. `nix/federation-bundle.nix` adds pinned
+`nft` and `bpftool` utilities. Set `package` to the resulting immutable store
+path. The binaries are test-profile builds, not release/install claims.
+
+## NIC-63 mesh job
+
+Run the first two-Mother decomposed job with the same private config and staged
+closure:
+
+```sh
+node scripts/federation/mesh-job.mjs \
+  --config /absolute/private/fleet.json \
+  --evidence /absolute/private/new-mesh-evidence
+```
+
+Mother A executes the arithmetic piece locally and forwards the repo-report
+piece to Mother B. The controller then waits for B's exact directory-read grant
+to expire and submits one more repo-report call. Passing evidence requires B's
+ledger to record `toy_grant_expired` and no runtime start for that uncovered
+call. No `board.post` Toy is needed: the reused directory-read ToyGrant already
+provides the covered/uncovered authority boundary.
 
 ## Gates
 

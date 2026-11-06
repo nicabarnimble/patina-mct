@@ -19,9 +19,13 @@ sha256sum --check source.sha256
 export CARGO_BUILD_JOBS=2 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0
 nix develop .#mother --command cargo build --locked --offline -p mct-daemon --bin mct-daemon --example federation_host
 nix develop .#mother --command cargo test --locked --offline -p mct-daemon --example federation_host
+nix develop .#mother --command bash scripts/first-real-app/build-child.sh
 mkdir -m700 "$artifacts"
 install -m555 "$CARGO_TARGET_DIR/debug/mct-daemon" "$artifacts/mct-daemon"
 install -m555 "$CARGO_TARGET_DIR/debug/examples/federation_host" "$artifacts/federation_host"
-printf '{"source_revision":"%s","profile":"dev-no-debuginfo","purpose":"test-only"}\n' "$revision" > "$artifacts/provenance.json"
-sha256sum "$artifacts/mct-daemon" "$artifacts/federation_host"
+install -m444 target/first-real-app/mct-repo-report.wasm "$artifacts/mct-repo-report.wasm"
+install -m444 target/first-real-app/child.toml "$artifacts/child.toml"
+install -m444 Cargo.lock "$artifacts/Cargo.lock"
+printf '{"source_revision":"%s","profile":"dev-no-debuginfo","purpose":"test-only","fixtures":["fleet-arithmetic","mct-repo-report-directory-read"]}\n' "$revision" > "$artifacts/provenance.json"
+sha256sum "$artifacts/mct-daemon" "$artifacts/federation_host" "$artifacts/mct-repo-report.wasm" "$artifacts/child.toml" "$artifacts/Cargo.lock"
 nix-build nix/federation-bundle.nix --arg artifacts "$artifacts" --no-out-link

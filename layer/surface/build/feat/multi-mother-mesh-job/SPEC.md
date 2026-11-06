@@ -24,7 +24,7 @@ exit_criteria:
     checked: false
     verify: node --test scripts/federation/mesh-job.test.mjs && physical evidence document
   - id: existing-toy-coverage
-    text: Mother B reuses the mct-repo-report Child and scoped directory-read ToyGrant from the first-real-app proof; a covered piece runs before grant expiry and a later piece is refused after expiry with ToyGrantDenied and zero runtime starts. No board.post Toy is added.
+    text: Mother B reuses the mct-repo-report Child and scoped directory-read ToyGrant from the first-real-app proof; a covered piece runs before grant expiry and a later piece is refused after expiry with the typed ToyGrantExpired fact and zero runtime starts. No board.post Toy is added.
     checked: false
     verify: physical evidence document plus canonical ledger summaries
   - id: build-once-delivery
@@ -102,7 +102,7 @@ The distinct operation identities prevent a local fallback from satisfying the d
 
 ## Covered versus uncovered without board.post
 
-Do not build `board.post`. The existing directory-read ToyGrant already has a coverage dimension suitable for this pass/fail test: its mandatory time bounds. B executes the delegated repo-report piece while the exact caller/Child/resource/action grant is current. After the recorded exclusive expiry, A submits the same B operation as a third piece with a new call ID. B's route authority evaluates the expired grant, records `ToyGrantDenied`, eliminates the local candidate, and returns denial without a runtime start.
+Do not build `board.post`. The existing directory-read ToyGrant already has a coverage dimension suitable for this pass/fail test: its mandatory time bounds. B executes the delegated repo-report piece while the exact caller/Child/resource/action grant is current. After the recorded expiry, A submits the same B operation as a third piece with a new call ID. B's route authority evaluates the expired grant, records the typed `ToyGrantExpired` refusal, eliminates the local candidate, and returns denial without a runtime start.
 
 This proves covered versus uncovered authority using an already implemented Toy and Child. Building `board.post` would add a new WIT contract, host adapter, signed issuance/revocation surface, persistence facts, and effect semantics that are unnecessary for NIC-63's first mesh proof.
 
@@ -113,7 +113,7 @@ The physical result passes only when one report proves all of the following from
 - one job ID with exactly two completed piece results;
 - A's local piece has exactly one completed execution on A and none on B;
 - B's delegated piece has forwarding evidence on A and exactly one completed execution on B, with none on A;
-- the uncovered call has one ToyGrant denial on B and zero runtime started/completed/failed facts on both Mothers;
+- the uncovered call has one typed `ToyGrantExpired` refusal on B and zero runtime started/completed/failed facts on both Mothers;
 - both independent ledgers verify under their own Mother identity; and
 - the target imported the signed closure and did not compile.
 

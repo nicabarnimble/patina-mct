@@ -1,9 +1,15 @@
 use super::*;
+use anyhow::ensure;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{
+    collections::BTreeSet,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 const LOCAL_CALL_ALPN: &str = "mct/local-call/0";
+const MIN_MESH_JOB_PIECES: usize = 2;
+const MAX_MESH_JOB_PIECES: usize = 16;
 static NEXT_LOCAL_CALL_OBSERVATION_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug, Deserialize)]
@@ -21,6 +27,33 @@ struct MctResidentCallSubmission {
     idempotency_key: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MctResidentJobPieceSubmission {
+    piece_id: String,
+    target: OperationTarget,
+    payload_metadata: PayloadMetadata,
+    payload: MctCallPayloadHandle,
+    inline_payload_base64: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MctResidentJobSubmission {
+    job_id: String,
+    authority_context: AuthorityContextSnapshot,
+    deadline: Timestamp,
+    trace_context: TraceContext,
+    pieces: Vec<MctResidentJobPieceSubmission>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum MctResidentSubmission {
+    Call(Box<MctResidentCallSubmission>),
+    Job(Box<MctResidentJobSubmission>),
+}
+
 #[derive(Serialize)]
 struct MctResidentCallResponse {
     outcome: CallProtocolOutcome,
@@ -31,6 +64,28 @@ struct MctResidentCallResponse {
     route_decision_id: Option<DecisionId>,
     route_taken: Option<RouteTaken>,
     inline_result_payload_base64: Option<String>,
+}
+
+#[derive(Serialize)]
+struct MctResidentJobPieceResponse {
+    piece_id: String,
+    call_id: CallId,
+    #[serde(flatten)]
+    result: MctResidentCallResponse,
+}
+
+#[derive(Serialize)]
+struct MctResidentJobResponse {
+    job_id: String,
+    outcome: CallProtocolOutcome,
+    safe_message: String,
+    pieces: Vec<MctResidentJobPieceResponse>,
+}
+
+struct MctPreparedJobPiece {
+    piece_id: String,
+    request: MctCallProtocolRequest,
+    inline_payload: Option<Vec<u8>>,
 }
 
 fn local_call_response(status_code: u16, value: impl Serialize) -> MctControlPlaneResponse {
@@ -198,6 +253,73 @@ fn local_protocol_request(
     Ok((request, inline_payload))
 }
 
+fn validate_mesh_job_identifier(label: &str, value: &str) -> Result<()> {
+    ensure!(
+        !value.is_empty()
+            && value.len() <= 64
+            && value.as_bytes()[0].is_ascii_alphanumeric()
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')),
+        "invalid mesh job {label}"
+    );
+    Ok(())
+}
+
+fn local_job_protocol_requests(
+    identity: MctLocalNodeIdentity,
+    uid: u32,
+    submission: MctResidentJobSubmission,
+) -> Result<Vec<MctPreparedJobPiece>> {
+    validate_mesh_job_identifier("id", &submission.job_id)?;
+    ensure!(
+        (MIN_MESH_JOB_PIECES..=MAX_MESH_JOB_PIECES).contains(&submission.pieces.len()),
+        "mesh job piece count is outside the supported bound"
+    );
+    let mut piece_ids = BTreeSet::new();
+    let mut requests = Vec::with_capacity(submission.pieces.len());
+    for piece in submission.pieces {
+        validate_mesh_job_identifier("piece id", &piece.piece_id)?;
+        ensure!(
+            piece_ids.insert(piece.piece_id.clone()),
+            "duplicate mesh job piece id"
+        );
+        let call_id = CallId::new(format!("{}:{}", submission.job_id, piece.piece_id))?;
+        let piece_span = SpanId::new(format!(
+            "span-mesh-job-{}-{}",
+            submission.job_id, piece.piece_id
+        ))?;
+        let call = MctResidentCallSubmission {
+            protocol_request_id: ProtocolRequestId::new(format!(
+                "proto-mesh-job-{}-{}",
+                submission.job_id, piece.piece_id
+            ))?,
+            call_id,
+            target: piece.target,
+            payload_metadata: piece.payload_metadata,
+            authority_context: submission.authority_context.clone(),
+            deadline: submission.deadline.clone(),
+            trace_context: TraceContext {
+                trace_id: submission.trace_context.trace_id.clone(),
+                span_id: piece_span,
+            },
+            payload: piece.payload,
+            inline_payload_base64: piece.inline_payload_base64,
+            idempotency_key: Some(format!(
+                "mct-mesh-job:{}:{}",
+                submission.job_id, piece.piece_id
+            )),
+        };
+        let (request, inline_payload) = local_protocol_request(identity.clone(), uid, call)?;
+        requests.push(MctPreparedJobPiece {
+            piece_id: piece.piece_id,
+            request,
+            inline_payload,
+        });
+    }
+    Ok(requests)
+}
+
 fn local_submission_observations(
     request: &MctCallProtocolRequest,
     uid: u32,
@@ -245,6 +367,35 @@ fn local_submission_observations(
     ]
 }
 
+fn local_job_observation(
+    job_id: &str,
+    trace_id: TraceId,
+    uid: u32,
+    kind: ObservationKind,
+    outcome: ObservationOutcome,
+    safe_message: &str,
+    detail_ref: String,
+) -> Result<MctObservation> {
+    Ok(local_call_observation(LocalCallObservationFact {
+        kind,
+        source_plane: if kind == ObservationKind::CallReceived {
+            SourcePlane::Adapter
+        } else {
+            SourcePlane::Kernel
+        },
+        outcome,
+        trace_id,
+        call_id: Some(CallId::new(job_id)?),
+        decision_id: None,
+        subject_id: Some(authenticated_uid_subject(uid)),
+        resource_id: Some("mct-local-mesh-job".into()),
+        policy_revision: None,
+        grants_revision: None,
+        safe_message: safe_message.into(),
+        detail_ref: Some(detail_ref),
+    }))
+}
+
 fn terminal_observation(
     request: &MctCallProtocolRequest,
     result: &MctIrohCallHandlerResult,
@@ -288,22 +439,19 @@ fn terminal_observation(
     })
 }
 
-fn project_local_call_result(result: MctIrohCallHandlerResult) -> MctControlPlaneResponse {
-    local_call_response(
-        200,
-        MctResidentCallResponse {
-            outcome: result.outcome,
-            protocol_reason: result.protocol_reason,
-            safe_message: result.safe_message,
-            result_ref: result.result_ref,
-            result_payload: result.result_payload,
-            route_decision_id: result.route_decision_id,
-            route_taken: result.route_taken,
-            inline_result_payload_base64: result
-                .inline_result_payload
-                .map(|bytes| BASE64_STANDARD.encode(bytes)),
-        },
-    )
+fn project_local_call_result_value(result: MctIrohCallHandlerResult) -> MctResidentCallResponse {
+    MctResidentCallResponse {
+        outcome: result.outcome,
+        protocol_reason: result.protocol_reason,
+        safe_message: result.safe_message,
+        result_ref: result.result_ref,
+        result_payload: result.result_payload,
+        route_decision_id: result.route_decision_id,
+        route_taken: result.route_taken,
+        inline_result_payload_base64: result
+            .inline_result_payload
+            .map(|bytes| BASE64_STANDARD.encode(bytes)),
+    }
 }
 
 async fn preflight_local_submission(
@@ -351,6 +499,181 @@ async fn preflight_local_submission(
     MctUdsControlCallPreflight::Authenticated(peer)
 }
 
+async fn execute_local_protocol_request(
+    paths: ResidentRuntimePaths,
+    ledger: ResidentLedgerWriter,
+    peer_uid: u32,
+    request: MctCallProtocolRequest,
+    inline_payload: Option<Vec<u8>>,
+) -> Option<MctResidentCallResponse> {
+    if ledger
+        .append(local_submission_observations(&request, peer_uid))
+        .await
+        .is_err()
+    {
+        return None;
+    }
+    let result = execute_resident_call(
+        paths,
+        ledger.clone(),
+        request.clone(),
+        ResidentPayloadIngress::local(inline_payload),
+    )
+    .await;
+    if ledger
+        .append(vec![terminal_observation(&request, &result)])
+        .await
+        .is_err()
+    {
+        return None;
+    }
+    Some(project_local_call_result_value(result))
+}
+
+fn mesh_job_outcome(pieces: &[MctResidentJobPieceResponse]) -> CallProtocolOutcome {
+    if pieces
+        .iter()
+        .all(|piece| piece.result.outcome == CallProtocolOutcome::Completed)
+    {
+        CallProtocolOutcome::Completed
+    } else if pieces
+        .iter()
+        .any(|piece| piece.result.outcome == CallProtocolOutcome::TimedOut)
+    {
+        CallProtocolOutcome::TimedOut
+    } else if pieces.iter().any(|piece| {
+        matches!(
+            piece.result.outcome,
+            CallProtocolOutcome::Failed | CallProtocolOutcome::Malformed
+        )
+    }) {
+        CallProtocolOutcome::Failed
+    } else if pieces
+        .iter()
+        .any(|piece| piece.result.outcome == CallProtocolOutcome::Denied)
+    {
+        CallProtocolOutcome::Denied
+    } else {
+        CallProtocolOutcome::Cancelled
+    }
+}
+
+async fn execute_local_job_submission(
+    paths: ResidentRuntimePaths,
+    ledger: ResidentLedgerWriter,
+    peer: MctUdsPeerCredentials,
+    identity: MctLocalNodeIdentity,
+    submission: MctResidentJobSubmission,
+) -> Option<MctControlPlaneResponse> {
+    let job_id = submission.job_id.clone();
+    let trace_id = submission.trace_context.trace_id.clone();
+    let requests = match local_job_protocol_requests(identity, peer.uid, submission) {
+        Ok(requests) => requests,
+        Err(_) => {
+            return append_local_refusal(
+                &ledger,
+                Some(peer.uid),
+                400,
+                "malformed call",
+                "malformed_envelope",
+            )
+            .await;
+        }
+    };
+    let job_observations = [
+        local_job_observation(
+            &job_id,
+            trace_id.clone(),
+            peer.uid,
+            ObservationKind::CallReceived,
+            ObservationOutcome::Informational,
+            "authenticated local mesh job received",
+            format!("local_mesh_job_piece_count:{}", requests.len()),
+        ),
+        local_job_observation(
+            &job_id,
+            trace_id.clone(),
+            peer.uid,
+            ObservationKind::CallConstructed,
+            ObservationOutcome::Allowed,
+            "local mesh job accepted for evaluation",
+            format!("local_mesh_job_piece_count:{}", requests.len()),
+        ),
+    ]
+    .into_iter()
+    .collect::<Result<Vec<_>>>()
+    .ok()?;
+    if ledger.append(job_observations).await.is_err() {
+        return None;
+    }
+    let mut pieces = Vec::with_capacity(requests.len());
+    for piece in requests {
+        let call_id = piece.request.call.call_id.clone();
+        let result = execute_local_protocol_request(
+            paths.clone(),
+            ledger.clone(),
+            peer.uid,
+            piece.request,
+            piece.inline_payload,
+        )
+        .await?;
+        pieces.push(MctResidentJobPieceResponse {
+            piece_id: piece.piece_id,
+            call_id,
+            result,
+        });
+    }
+    let outcome = mesh_job_outcome(&pieces);
+    let completed = pieces
+        .iter()
+        .filter(|piece| piece.result.outcome == CallProtocolOutcome::Completed)
+        .count();
+    let denied = pieces
+        .iter()
+        .filter(|piece| piece.result.outcome == CallProtocolOutcome::Denied)
+        .count();
+    let failed = pieces.len().saturating_sub(completed + denied);
+    let terminal = local_job_observation(
+        &job_id,
+        trace_id,
+        peer.uid,
+        ObservationKind::ResultRecorded,
+        match outcome {
+            CallProtocolOutcome::Completed => ObservationOutcome::Completed,
+            CallProtocolOutcome::Denied | CallProtocolOutcome::Malformed => {
+                ObservationOutcome::Denied
+            }
+            CallProtocolOutcome::Failed => ObservationOutcome::Failed,
+            CallProtocolOutcome::TimedOut => ObservationOutcome::TimedOut,
+            CallProtocolOutcome::Cancelled => ObservationOutcome::Cancelled,
+            CallProtocolOutcome::AcceptedForRouting => ObservationOutcome::Allowed,
+        },
+        if outcome == CallProtocolOutcome::Completed {
+            "local mesh job completed"
+        } else {
+            "local mesh job incomplete"
+        },
+        format!("local_mesh_job_result:completed={completed};denied={denied};failed={failed}"),
+    )
+    .ok()?;
+    if ledger.append(vec![terminal]).await.is_err() {
+        return None;
+    }
+    Some(local_call_response(
+        200,
+        MctResidentJobResponse {
+            job_id,
+            outcome,
+            safe_message: if outcome == CallProtocolOutcome::Completed {
+                "mesh job completed".into()
+            } else {
+                "mesh job incomplete".into()
+            },
+            pieces,
+        },
+    ))
+}
+
 async fn execute_local_submission(
     paths: ResidentRuntimePaths,
     ledger: ResidentLedgerWriter,
@@ -382,7 +705,7 @@ async fn execute_local_submission(
             .await;
         }
     };
-    let submission = match serde_json::from_slice::<MctResidentCallSubmission>(&body) {
+    let submission = match serde_json::from_slice::<MctResidentSubmission>(&body) {
         Ok(submission) => submission,
         Err(_) => {
             return append_local_refusal(
@@ -395,41 +718,30 @@ async fn execute_local_submission(
             .await;
         }
     };
-    let (request, inline_payload) = match local_protocol_request(identity, peer.uid, submission) {
-        Ok(request) => request,
-        Err(_) => {
-            return append_local_refusal(
-                &ledger,
-                Some(peer.uid),
-                400,
-                "malformed call",
-                "invalid_call",
-            )
-            .await;
+    match submission {
+        MctResidentSubmission::Call(submission) => {
+            let (request, inline_payload) =
+                match local_protocol_request(identity, peer.uid, *submission) {
+                    Ok(request) => request,
+                    Err(_) => {
+                        return append_local_refusal(
+                            &ledger,
+                            Some(peer.uid),
+                            400,
+                            "malformed call",
+                            "invalid_call",
+                        )
+                        .await;
+                    }
+                };
+            execute_local_protocol_request(paths, ledger, peer.uid, request, inline_payload)
+                .await
+                .map(|result| local_call_response(200, result))
         }
-    };
-    if ledger
-        .append(local_submission_observations(&request, peer.uid))
-        .await
-        .is_err()
-    {
-        return None;
+        MctResidentSubmission::Job(submission) => {
+            execute_local_job_submission(paths, ledger, peer, identity, *submission).await
+        }
     }
-    let result = execute_resident_call(
-        paths,
-        ledger.clone(),
-        request.clone(),
-        ResidentPayloadIngress::local(inline_payload),
-    )
-    .await;
-    if ledger
-        .append(vec![terminal_observation(&request, &result)])
-        .await
-        .is_err()
-    {
-        return None;
-    }
-    Some(project_local_call_result(result))
 }
 
 pub(crate) fn resident_local_call_handler(
@@ -837,6 +1149,119 @@ mod tests {
         .await;
         assert!(suppressed.is_none());
         ledger.close().await;
+    }
+
+    fn private_tempdir(prefix: &str) -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir_in(std::env::var_os("HOME").unwrap())
+            .unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        dir
+    }
+
+    fn job_submission_body(job_id: &str, piece_ids: &[&str]) -> Vec<u8> {
+        let payload = b"[]";
+        let digest = blake3::hash(payload).to_hex().to_string();
+        serde_json::to_vec(&serde_json::json!({
+            "job_id": job_id,
+            "authority_context": {
+                "policy_revision": 1,
+                "expected_receiver_grants_authority": {
+                    "mother_node_id": "local-mct",
+                    "authority_epoch": "epoch-test",
+                    "generation": 1,
+                    "source_authority_observation_id": "obs-authority-test-1"
+                },
+                "vision_policy_revision": 1
+            },
+            "deadline": "2099-01-01T00:00:00Z",
+            "trace_context": {
+                "trace_id": format!("trace-{job_id}"),
+                "span_id": format!("span-{job_id}")
+            },
+            "pieces": piece_ids.iter().map(|piece_id| serde_json::json!({
+                "piece_id": piece_id,
+                "target": {
+                    "namespace": "patina:demo",
+                    "interface_name": "control@0.1.0",
+                    "function_name": "run"
+                },
+                "payload_metadata": {
+                    "data_classification": "public",
+                    "size_bytes": payload.len(),
+                    "contains_secret_scoped_material": false
+                },
+                "payload": {
+                    "payload_kind": "inline_payload",
+                    "inline_payload_ref": format!("payload-{job_id}-{piece_id}"),
+                    "content_type": "application/json",
+                    "size_bytes": payload.len(),
+                    "blake3_digest_hex": digest
+                },
+                "inline_payload_base64": BASE64_STANDARD.encode(payload)
+            })).collect::<Vec<_>>()
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn resident_mesh_job_decomposes_one_submission_into_ordinary_piece_calls() {
+        let dir = private_tempdir("mct-mesh-job-");
+        let (paths, _identity_path, ledger_path) = local_paths(&dir);
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
+        let response = execute_local_submission(
+            paths,
+            ledger.clone(),
+            MctUdsPeerCredentials {
+                uid: 501,
+                gid: 20,
+                pid: Some(42),
+            },
+            job_submission_body("job-two-pieces", &["local", "delegated"]),
+        )
+        .await
+        .expect("durable mesh-job result returns a response");
+        assert_eq!(response.status_code, 200);
+        let body: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+        assert_eq!(body["job_id"], "job-two-pieces");
+        assert_eq!(body["pieces"].as_array().unwrap().len(), 2);
+        assert_eq!(body["pieces"][0]["piece_id"], "local");
+        assert_eq!(body["pieces"][0]["call_id"], "job-two-pieces:local");
+        assert_eq!(body["pieces"][1]["piece_id"], "delegated");
+        assert_eq!(body["pieces"][1]["call_id"], "job-two-pieces:delegated");
+        ledger.close().await;
+
+        let text = std::fs::read_to_string(ledger_path).unwrap();
+        assert!(text.contains("local_mesh_job_piece_count:2"));
+        assert!(text.contains("job-two-pieces:local"));
+        assert!(text.contains("job-two-pieces:delegated"));
+    }
+
+    #[tokio::test]
+    async fn resident_mesh_job_rejects_duplicate_pieces_before_any_piece_call() {
+        let dir = private_tempdir("mct-mesh-job-duplicate-");
+        let (paths, _identity_path, ledger_path) = local_paths(&dir);
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
+        let response = execute_local_submission(
+            paths,
+            ledger.clone(),
+            MctUdsPeerCredentials {
+                uid: 501,
+                gid: 20,
+                pid: Some(42),
+            },
+            job_submission_body("job-duplicate", &["same", "same"]),
+        )
+        .await
+        .expect("malformed mesh job is durably refused");
+        assert_eq!(response.status_code, 400);
+        ledger.close().await;
+
+        let text = std::fs::read_to_string(ledger_path).unwrap();
+        assert!(text.contains("malformed_envelope"));
+        assert!(!text.contains("job-duplicate:same"));
     }
 
     fn paths_for_failed_writer(dir: &tempfile::TempDir) -> ResidentRuntimePaths {
