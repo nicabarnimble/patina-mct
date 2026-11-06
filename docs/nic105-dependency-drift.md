@@ -1,6 +1,6 @@
 # NIC-105 canonical Child dependency drift
 
-**PASS — 2026-11-06, completed 03:20:16 UTC.**
+**PASS — 2026-11-06, completed 03:41:28 UTC.**
 
 The same canonical `mct-repo-report` component ran against immutable
 `Cargo.lock` snapshots on Mother A (`nicamaster`) and Mother B (`nicanode0`).
@@ -18,12 +18,12 @@ remain outside the repository.
 
 ## Job and drift
 
-- Job ID: `nic105-0d3416bd-b7f6-48ee-843f-030c5b5b768d`.
-- A call: `nic105-0d3416bd-b7f6-48ee-843f-030c5b5b768d:mother-a`.
-- B delegated call: `nic105-0d3416bd-b7f6-48ee-843f-030c5b5b768d:mother-b`.
-- B receiver execution ID: `mct-peer-execution-v1:.peer-execution-c7cae4560d7c2782d6dfd242ee7433c8`.
-- Expired B probe: `nic105-0d3416bd-b7f6-48ee-843f-030c5b5b768d-expired-b`.
-- Expired B receiver ID: `mct-peer-execution-v1:.peer-execution-d4bb32c5f7fe324d2aac398fc37eb9d3`.
+- Job ID: `nic105-4e6ee9b2-a52f-42c9-ad0b-5785ccacb776`.
+- A call: `nic105-4e6ee9b2-a52f-42c9-ad0b-5785ccacb776:mother-a`.
+- B delegated call: `nic105-4e6ee9b2-a52f-42c9-ad0b-5785ccacb776:mother-b`.
+- B receiver execution ID: `mct-peer-execution-v1:.peer-execution-a08039a4e7d6368cc5f483b9d50fc892`.
+- Expired B probe: `nic105-4e6ee9b2-a52f-42c9-ad0b-5785ccacb776-expired-b`.
+- Expired B receiver ID: `mct-peer-execution-v1:.peer-execution-19a1d0af0adb90ed1f6558818486b68a`.
 
 Both pieces completed. The `mct-dependency-drift/v1` result compared two
 537-package inventories and found **52 package differences**:
@@ -42,8 +42,8 @@ B's was `da4c7963a8811ee8fa57d89b38484ac92c7ff61bb301a9a58290f58fdac9e182`.
 
 | Mother | Canonical ledger | Required facts |
 | --- | --- | --- |
-| A / nicamaster | 77 entries, head sequence 76, SHA256 `53437f0e50ab2077c3eb3c74eca29e372fb9e0d551cd878b92c5df98923ce5d9` | Parent result recorded `completed=2;denied=0;failed=0`; A's piece had one runtime start and one exact executor attestation on A; B's piece had one peer send and completed reply; A had no runtime fact for B's piece or the expired probe. |
-| B / nicanode0 | 64 entries, head sequence 63, SHA256 `5d3581befef5dde99152899b9722a993a887543563a3708d742435e7988d911f` | B's caller ID correlated to the receiver execution ID; B's piece had one runtime start and one exact executor attestation on B; the fresh probe correlated to a distinct receiver ID with one denied `toy_grant_expired` / `ExpiredGrant` fact and zero runtime start/completion/failure facts. |
+| A / nicamaster | 77 entries, head sequence 76, SHA256 `3ffd7d8ddde5944dc8629be4d0b0ddf92852ecb520b60bca2a0ae666919fa043` | Parent result recorded `completed=2;denied=0;failed=0`; A's piece had one runtime start and one exact executor attestation on A; B's piece had one peer send and completed reply; A had no runtime fact for B's piece or the expired probe. |
+| B / nicanode0 | 64 entries, head sequence 63, SHA256 `1c8d81c6f2110fa827063e6f9e1ba26d623085a8dbc0e81afc389c78e3998971` | B's caller ID correlated to the receiver execution ID; B's piece had one runtime start and one exact executor attestation on B; the fresh probe correlated to a distinct receiver ID with one denied `toy_grant_expired` / `ExpiredGrant` fact and zero runtime start/completion/failure facts. |
 
 Both independent hash-chained ledgers verified with preserved prefixes. Runtime
 fact sets contained only A's inventory on A and B's correlated inventory on B.
@@ -52,8 +52,8 @@ facts and zero Child starts**.
 
 ## Artifact and delivery boundary
 
-- Artifact and controller source: `f69b163e4d0d868315449772cd119a3955446504`.
-- Signed closure: `/nix/store/5lw3s139h9l7l7kn471jpnipq29i8k7f-mct-federation-test-bundle`.
+- Artifact and controller source: `be6c6f76512d145d1665eaf2dd5a80d0b5acb0dd`.
+- Signed closure: `/nix/store/irrgs7gyki4ypid9a85jsmnldvw6xshh-mct-federation-test-bundle`.
 - Closure size: 310,737,584 bytes across 37 requisites.
 - Mother SHA256: `0fcedb277de53afa61dc6bb6cbf789f7553ee44c4b88cc896e7a118f03cc3fea`.
 - Helper SHA256: `e032ad36937e5c99949ae71dae3a2e8fd3265655d53ac0112f3a53cf55dbd4a2`.
@@ -99,10 +99,16 @@ process, owned transient unit or executable staging directory on either host.
 - A transferred macOS archive left AppleDouble metadata beside WIT files; WIT
   parsing rejected the non-UTF-8 sidecar. The metadata was removed on the
   builder and was not part of the committed source or final artifacts.
+- The first passing physical receipt preceded a release-spec finding that the
+  Child crate version had to inherit the workspace version. The manifest was
+  corrected without changing resolved version `0.2.0`; the closure was rebuilt
+  from `be6c6f7` and the full physical ceremony was repeated. This document and
+  its receipts describe that later authoritative run.
 
-All failed attempts remained on nicamaster and produced no deployable closure.
-The single final closure above was imported unchanged on nicanode0. The first
-physical workload run passed.
+All failed build attempts remained on nicamaster and produced no deployable
+closure. The single final closure above was imported unchanged on nicanode0.
+Both physical workload runs passed; only the later final-source run is retained
+as acceptance evidence.
 
 ## Repository gates
 
