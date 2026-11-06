@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { identity, loadConfig, validateKnownHosts, sshArgs, saveRequest, saveResult, loadResult, validateFirst, validateReplay, validateWorkerSummary, validateStudioSummary, makeResult, getOrRun, revocationIdentity, makeRevocationReceipt, makeRevocationIntent, makeRevocationBaseline, saveRevocationBaseline, saveRevocationReceipt, loadRevocationReceipt, loadRevocationIntent, loadRevocationBaseline, getOrRunRevocation, validateRevocationReply, validateExecutorAttestation, HelperClient, freshRun, revocationRun, verifyRemoteArtifacts, validateLumeInspection, validateSmokeRuns, revocationEnabled, hash } from './client.mjs';
 const dir = () => mkdtempSync(join(homedir(), '.mct-client-test-'));
 const job = identity('a'.repeat(64),'b'.repeat(64),'worker');
-const report = {schema:'mct-repo-report/v1',sha256:'a'.repeat(64),package_count:2,registry_count:1,git_count:0,local_count:1,duplicates:{foo:['1','2']},selected:{iroh:[],rusqlite:[],wasmtime:['1'],'wasmtime-wasi':[]}};
+const report = {schema:'mct-repo-report/v1',sha256:'a'.repeat(64),package_count:2,registry_count:1,git_count:0,local_count:1,packages:{foo:['1','2'],wasmtime:['1']},duplicates:{foo:['1','2']},selected:{iroh:[],rusqlite:[],wasmtime:['1'],'wasmtime-wasi':[]}};
 const attestation={vm_name:'nic73-worker',machine_identifier_sha256:'c'.repeat(64),hardware_uuid_sha256:'d'.repeat(64),nat_ip:'10.1.2.4'};
 const ed25519Key='AAAAC3NzaC1lZDI1NTE5AAAAIAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB';
 const knownHostsLine=(host=attestation.nat_ip,key=ed25519Key)=>`${host} ssh-ed25519 ${key}\n`;

@@ -11,7 +11,9 @@
     let
       system = "aarch64-linux";
       pkgs = import nixpkgs { inherit system; overlays = [ rust-overlay.overlays.default ]; };
-      toolchain = pkgs.rust-bin.stable."1.96.0".minimal;
+      toolchain = pkgs.rust-bin.stable."1.96.0".minimal.override {
+        targets = [ "wasm32-wasip1" ];
+      };
       rustPlatform = pkgs.makeRustPlatform { cargo = toolchain; rustc = toolchain; };
       mother = rustPlatform.buildRustPackage {
         pname = "mct-admin-mother";
@@ -25,7 +27,7 @@
           outputHashes."patina-sdk-0.22.0" = "sha256-xX8+cAj2D22frDw6kR7y2JWnGg6veX7PJv+fmqz1ttw=";
         };
         cargoBuildFlags = [ "-p" "mct-daemon" "--bin" "mct-daemon" "-p" "mct-install-probe" "--bin" "mct-install-probe" ];
-        nativeBuildInputs = [ pkgs.pkg-config ];
+        nativeBuildInputs = [ pkgs.pkg-config pkgs.wasm-tools ];
         CARGO_BUILD_JOBS = "2";
         # The hardware gate tests the installed programs, outside the build sandbox.
         doCheck = false;

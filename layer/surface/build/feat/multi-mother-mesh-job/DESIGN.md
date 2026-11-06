@@ -27,7 +27,7 @@ enum MctResidentSubmission {
 
 A call has `call_id`; a job has `job_id` and `pieces`, so strict deserialization cannot confuse the variants. The existing call JSON remains byte-for-byte compatible.
 
-Job pieces omit caller, origin, peer, ALPN, route, and authority decisions. They carry only target and existing payload fields. Shared authority expectation, deadline, and job trace live once on the parent envelope. The resident derives all per-piece identities deterministically after validating the full envelope.
+Job pieces omit caller, origin, peer, ALPN, route decisions, and authority decisions. They carry target and existing payload fields plus an optional exact `required_node_id` placement constraint. Shared authority expectation, deadline, and job trace live once on the parent envelope. The resident derives all per-piece identities deterministically after validating the full envelope. A required node only eliminates nonmatching candidates before ranking; normal authority still decides whether the matching route is admissible.
 
 ## Validation before effects
 
@@ -44,7 +44,7 @@ No piece begins when another piece is malformed.
 
 ## Execution and retry
 
-Execute in declaration order. Each piece calls `execute_resident_call` exactly as a single local submission does. Derived idempotency keys are stable, so retry after a lost aggregate response replays completed pieces rather than executing them twice.
+Execute in declaration order. Each piece calls `execute_resident_call` exactly as a single local submission does. Derived idempotency keys are stable, so retry after a lost aggregate response replays completed pieces rather than executing them twice. The optional required node participates in the idempotency fingerprint, so changing placement under the same piece key is refused rather than replayed or re-executed.
 
 Continue after a typed piece denial/failure so the caller receives the disposition of every independent piece. Stop only when the ledger cannot make the next required durable observation, because returning or continuing after writer failure would violate append-before-effect.
 

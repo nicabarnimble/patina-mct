@@ -31,6 +31,7 @@ struct MctResidentCallSubmission {
 #[serde(deny_unknown_fields)]
 struct MctResidentJobPieceSubmission {
     piece_id: String,
+    required_node_id: Option<MctNodeId>,
     target: OperationTarget,
     payload_metadata: PayloadMetadata,
     payload: MctCallPayloadHandle,
@@ -84,6 +85,7 @@ struct MctResidentJobResponse {
 
 struct MctPreparedJobPiece {
     piece_id: String,
+    required_node_id: Option<MctNodeId>,
     request: MctCallProtocolRequest,
     inline_payload: Option<Vec<u8>>,
 }
@@ -313,6 +315,7 @@ fn local_job_protocol_requests(
         let (request, inline_payload) = local_protocol_request(identity.clone(), uid, call)?;
         requests.push(MctPreparedJobPiece {
             piece_id: piece.piece_id,
+            required_node_id: piece.required_node_id,
             request,
             inline_payload,
         });
@@ -505,6 +508,7 @@ async fn execute_local_protocol_request(
     peer_uid: u32,
     request: MctCallProtocolRequest,
     inline_payload: Option<Vec<u8>>,
+    required_node_id: Option<MctNodeId>,
 ) -> Option<MctResidentCallResponse> {
     if ledger
         .append(local_submission_observations(&request, peer_uid))
@@ -513,11 +517,12 @@ async fn execute_local_protocol_request(
     {
         return None;
     }
-    let result = execute_resident_call(
+    let result = execute_resident_call_with_required_node(
         paths,
         ledger.clone(),
         request.clone(),
         ResidentPayloadIngress::local(inline_payload),
+        required_node_id,
     )
     .await;
     if ledger
@@ -615,6 +620,7 @@ async fn execute_local_job_submission(
             peer.uid,
             piece.request,
             piece.inline_payload,
+            piece.required_node_id,
         )
         .await?;
         pieces.push(MctResidentJobPieceResponse {
@@ -734,7 +740,7 @@ async fn execute_local_submission(
                         .await;
                     }
                 };
-            execute_local_protocol_request(paths, ledger, peer.uid, request, inline_payload)
+            execute_local_protocol_request(paths, ledger, peer.uid, request, inline_payload, None)
                 .await
                 .map(|result| local_call_response(200, result))
         }
@@ -1204,6 +1210,38 @@ mod tests {
             })).collect::<Vec<_>>()
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn resident_mesh_job_preserves_exact_mother_constraints() {
+        let dir = private_tempdir("mct-mesh-job-constraint-");
+        let (paths, _identity_path, _ledger_path) = local_paths(&dir);
+        let mut body: serde_json::Value = serde_json::from_slice(&job_submission_body(
+            "job-constrained",
+            &["mother-a", "mother-b"],
+        ))
+        .unwrap();
+        body["pieces"][0]["required_node_id"] = serde_json::json!("mother-a");
+        body["pieces"][1]["required_node_id"] = serde_json::json!("mother-b");
+        let MctResidentSubmission::Job(submission) =
+            serde_json::from_value::<MctResidentSubmission>(body).unwrap()
+        else {
+            panic!("expected mesh job");
+        };
+        let identity = MctDaemonConfigStore::new(paths.config_path())
+            .load()
+            .unwrap()
+            .local_identity
+            .unwrap();
+        let pieces = local_job_protocol_requests(identity, 501, *submission).unwrap();
+        assert_eq!(
+            pieces[0].required_node_id.as_ref().unwrap().as_str(),
+            "mother-a"
+        );
+        assert_eq!(
+            pieces[1].required_node_id.as_ref().unwrap().as_str(),
+            "mother-b"
+        );
     }
 
     #[tokio::test]

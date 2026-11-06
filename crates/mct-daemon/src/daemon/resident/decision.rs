@@ -80,10 +80,11 @@ pub(super) enum RouteDisposition {
     },
 }
 
-pub(super) async fn authorize_resident_child(
+pub(super) async fn authorize_resident_child_with_required_node(
     paths: ResidentRuntimePaths,
     ledger: ResidentLedgerWriter,
     call: MctCall,
+    required_node_id: Option<MctNodeId>,
 ) -> Result<RouteDisposition> {
     let projected = ledger
         .projected_authority(paths.state_path().to_path_buf())
@@ -94,7 +95,12 @@ pub(super) async fn authorize_resident_child(
             .map_err(|deny| anyhow::anyhow!("local execution authority unavailable: {deny:?}"))?;
         let load_report =
             load_children_from_dir(MctChildLoadOptions::new(paths.children_dir().to_path_buf()));
-        authorize_resident_child_from_snapshot(&snapshot, load_report.children, &call)
+        authorize_resident_child_from_snapshot_with_required_node(
+            &snapshot,
+            load_report.children,
+            &call,
+            required_node_id.as_ref(),
+        )
     })
     .await
     .context("join resident child authorization")?
@@ -295,10 +301,20 @@ fn resident_route_decision_observation(
     observation
 }
 
+#[cfg(test)]
 pub(super) fn authorize_resident_child_from_snapshot(
     snapshot: &LocalExecutionAuthoritySnapshot,
     children: Vec<mct_daemon::MctLoadedChild>,
     call: &MctCall,
+) -> Result<RouteDisposition> {
+    authorize_resident_child_from_snapshot_with_required_node(snapshot, children, call, None)
+}
+
+pub(super) fn authorize_resident_child_from_snapshot_with_required_node(
+    snapshot: &LocalExecutionAuthoritySnapshot,
+    children: Vec<mct_daemon::MctLoadedChild>,
+    call: &MctCall,
+    required_node_id: Option<&MctNodeId>,
 ) -> Result<RouteDisposition> {
     let child_policy = snapshot.child_policy();
     let projection = MctConfigChildAuthorityProjection {
@@ -332,7 +348,9 @@ pub(super) fn authorize_resident_child_from_snapshot(
             Vec::new()
         };
         let (local_runtime, candidate) = resident_candidate_for_child(&projection, &child);
-        let reason = if !child_authority.is_allowed() {
+        let reason = if required_node_id.is_some_and(|required| required != &candidate.node_id) {
+            Some(CandidateEliminationReason::RouteMismatch)
+        } else if !child_authority.is_allowed() {
             Some(child_elimination_reason(
                 child_authority.evaluation.reason_code,
             ))
@@ -367,7 +385,17 @@ pub(super) fn authorize_resident_child_from_snapshot(
         });
     }
 
-    let remote_plans = resident_remote_candidate_plans_for_call(snapshot, call)?;
+    let mut remote_plans = resident_remote_candidate_plans_for_call(snapshot, call)?;
+    for plan in &mut remote_plans {
+        if required_node_id.is_some_and(|required| required != &plan.candidate.node_id) {
+            plan.authority = CandidateAuthorityEvaluation::eliminated(
+                plan.candidate.clone(),
+                CandidateEliminationReason::RouteMismatch,
+                snapshot.policy_revision(),
+                generation,
+            );
+        }
+    }
     let mut observations = resident_candidate_observations(call, &plans);
     observations.extend(resident_remote_candidate_observations(call, &remote_plans));
     let mut authority_evaluations = plans
@@ -831,7 +859,12 @@ mod tests {
         }
     }
     fn decision_fixture() -> DecisionFixture {
-        let dir = tempfile::tempdir().unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::Builder::new()
+            .prefix("mct-route-decision-")
+            .tempdir_in(std::env::var_os("HOME").unwrap())
+            .unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let config_path = dir.path().join("config.json");
         let state_path = dir.path().join("state.sqlite");
         let local_identity_path = dir.path().join("identity").join("iroh-secret.hex");
@@ -989,6 +1022,57 @@ mod tests {
         )
         .unwrap();
     }
+    #[test]
+    fn exact_mother_constraint_filters_candidates_without_granting_authority() {
+        let fixture = decision_fixture();
+        let child = test_child();
+        let snapshot = resident_test_authority_snapshot(
+            &fixture.config,
+            Some(&fixture.state),
+            std::slice::from_ref(&child),
+            Timestamp::new("2026-07-09T00:01:00Z").unwrap(),
+            1,
+        )
+        .unwrap();
+
+        let remote = authorize_resident_child_from_snapshot_with_required_node(
+            &snapshot,
+            vec![child.clone()],
+            &fixture.call,
+            Some(&MctNodeId::new("remote-mct").unwrap()),
+        )
+        .unwrap();
+        assert!(matches!(remote, RouteDisposition::Remote { .. }));
+
+        let local = authorize_resident_child_from_snapshot_with_required_node(
+            &snapshot,
+            vec![child.clone()],
+            &fixture.call,
+            Some(&MctNodeId::new("local-mct").unwrap()),
+        )
+        .unwrap();
+        assert!(matches!(local, RouteDisposition::Local { .. }));
+
+        let absent = authorize_resident_child_from_snapshot_with_required_node(
+            &snapshot,
+            vec![child],
+            &fixture.call,
+            Some(&MctNodeId::new("absent-mct").unwrap()),
+        )
+        .unwrap();
+        let RouteDisposition::Denied { decision, .. } = absent else {
+            panic!("absent required Mother must deny");
+        };
+        assert_eq!(
+            decision.no_route_reason,
+            Some(CandidateEliminationReason::RouteMismatch)
+        );
+        assert!(decision.authority_evaluations.iter().all(|evaluation| {
+            evaluation.outcome == CandidateAuthorityOutcome::Eliminated
+                && evaluation.reason == Some(CandidateEliminationReason::RouteMismatch)
+        }));
+    }
+
     #[tokio::test]
     async fn resident_route_optimization_cannot_grant_authority() {
         let dir = tempfile::tempdir().unwrap();

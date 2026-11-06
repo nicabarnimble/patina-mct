@@ -68,6 +68,7 @@ MctResidentJobSubmission {
   pieces: [
     {
       piece_id
+      required_node_id?   # optional exact placement constraint, not authority
       target
       payload_metadata
       payload
@@ -84,6 +85,7 @@ Rules:
 - The first slice accepts 2 through 16 pieces and remains under the existing call-frame budget.
 - The adapter derives `call_id = <job_id>:<piece_id>`, per-piece protocol/span IDs, and `idempotency_key = mct-mesh-job:<job_id>:<piece_id>`.
 - Caller identity and origin still come only from the authenticated local adapter.
+- An optional `required_node_id` removes nonmatching candidates before ranking; it cannot make an unauthorized candidate admissible and participates in idempotency.
 - Pieces execute in request order. All pieces are attempted unless durability becomes unavailable; the aggregate outcome is `completed` only when every piece completed.
 - The job envelope is orchestration, not an atomic transaction. Already completed effects are not rolled back when a later piece denies or fails.
 
