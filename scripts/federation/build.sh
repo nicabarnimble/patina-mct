@@ -29,7 +29,8 @@ nix develop .#mother --command cargo build --locked --offline -p mct-daemon --bi
 nix develop .#mother --command cargo test --locked --offline -p mct-daemon --example federation_host
 child_output="$CARGO_TARGET_DIR/nic105-repo-report"
 [[ ! -e $child_output ]] || { echo 'Child output directory must be new' >&2; exit 2; }
-nix develop .#mother --command bash scripts/first-real-app/build-child.sh "$child_output"
+nix develop .#mother --command env MCT_CHILD_CARGO_OFFLINE=0 \
+  bash scripts/first-real-app/build-child.sh "$child_output"
 mkdir -m700 "$artifacts"
 install -m555 "$CARGO_TARGET_DIR/debug/mct-daemon" "$artifacts/mct-daemon"
 install -m555 "$CARGO_TARGET_DIR/debug/examples/federation_host" "$artifacts/federation_host"
