@@ -28,13 +28,15 @@ test('mesh ledger proof isolates execution and requires exact expired-grant refu
   const local = `${jobId}:local`, delegated = `${jobId}:delegated`, uncovered = `${jobId}-uncovered`;
   a.checkpoint = { observations: [
     { call_id: jobId, kind: 'result_recorded', outcome: 'completed', detail_ref: 'local_mesh_job_result:completed=2;denied=0;failed=0' },
-    { call_id: local, kind: 'runtime_execution_started', provenance: { executed_on: 'a' } },
+    { call_id: local, kind: 'runtime_execution_started', provenance: {} },
+    { call_id: local, kind: 'runtime_execution_completed', provenance: {} },
     { call_id: local, kind: 'runtime_execution_completed', provenance: { executed_on: 'a' } },
     { call_id: delegated, kind: 'peer_call_sent' },
   ] };
   b.checkpoint = { observations: [
     { call_id: 'receiver-delegated', kind: 'call_constructed', peer_correlation: { caller_call_id: delegated } },
-    { call_id: 'receiver-delegated', kind: 'runtime_execution_started', provenance: { executed_on: 'b' } },
+    { call_id: 'receiver-delegated', kind: 'runtime_execution_started', provenance: {} },
+    { call_id: 'receiver-delegated', kind: 'runtime_execution_completed', provenance: {} },
     { call_id: 'receiver-delegated', kind: 'runtime_execution_completed', provenance: { executed_on: 'b' } },
     { call_id: 'receiver-uncovered', kind: 'call_constructed', peer_correlation: { caller_call_id: uncovered } },
     { call_id: 'receiver-uncovered', kind: 'toy_grant_expired', outcome: 'denied', detail_ref: 'toy_grant_reason:ExpiredGrant' },

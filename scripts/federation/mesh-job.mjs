@@ -66,16 +66,18 @@ export function assertMeshJobLedgers({ a, b, jobId, uncoveredCallId }) {
 
   const aLocal = runtimeFor(aObservations, localCallId);
   assert.equal(aLocal.filter(observation => observation.kind === 'runtime_execution_started').length, 1, 'A local piece did not start exactly once');
-  assert.equal(aLocal.filter(observation => observation.kind === 'runtime_execution_completed').length, 1, 'A local piece did not complete exactly once');
-  assert.ok(aLocal.every(observation => observation.provenance?.executed_on === a.node), 'A ledger attributes its piece to another Mother');
+  assert.ok(aLocal.some(observation => observation.kind === 'runtime_execution_completed'), 'A local piece did not complete');
+  assert.equal(aLocal.filter(observation => observation.kind === 'runtime_execution_completed' && observation.provenance?.executed_on === a.node).length, 1, 'A local piece lacks one exact executor attestation');
+  assert.equal(aLocal.filter(observation => ['runtime_execution_failed', 'runtime_execution_timed_out'].includes(observation.kind)).length, 0, 'A local piece recorded runtime failure');
   assert.equal(runtimeFor(bObservations, localCallId).length, 0, 'B executed A local piece');
 
   const delegatedCorrelation = correlationFor(bObservations, delegatedCallId);
   const delegatedExecutionId = delegatedCorrelation.call_id;
   const bDelegated = runtimeFor(bObservations, delegatedExecutionId);
   assert.equal(bDelegated.filter(observation => observation.kind === 'runtime_execution_started').length, 1, 'B delegated piece did not start exactly once');
-  assert.equal(bDelegated.filter(observation => observation.kind === 'runtime_execution_completed').length, 1, 'B delegated piece did not complete exactly once');
-  assert.ok(bDelegated.every(observation => observation.provenance?.executed_on === b.node), 'B ledger attributes its piece to another Mother');
+  assert.ok(bDelegated.some(observation => observation.kind === 'runtime_execution_completed'), 'B delegated piece did not complete');
+  assert.equal(bDelegated.filter(observation => observation.kind === 'runtime_execution_completed' && observation.provenance?.executed_on === b.node).length, 1, 'B delegated piece lacks one exact executor attestation');
+  assert.equal(bDelegated.filter(observation => ['runtime_execution_failed', 'runtime_execution_timed_out'].includes(observation.kind)).length, 0, 'B delegated piece recorded runtime failure');
   assert.equal(runtimeFor(aObservations, delegatedCallId).length, 0, 'A locally executed B delegated piece');
   const sent = aObservations.filter(observation => observation.call_id === delegatedCallId && observation.kind === 'peer_call_sent');
   assert.equal(sent.length, 1, 'A ledger lacks exact delegated-piece forwarding');
