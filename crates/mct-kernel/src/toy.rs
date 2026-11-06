@@ -1252,6 +1252,19 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "NIC-125 tracked known failure; run by scripts/federation/done.mjs"]
+    fn done_c2_toy_grant_without_expiry_is_denied() {
+        let mut open = grant(ToyGrantState::Active);
+        open.constraints.expires_at = None;
+        let result = evaluate_toy_grant_for_call(&call(), &request(), &[toy()], &[open]);
+        assert!(
+            result.authorized.is_none(),
+            "DONE-REASON: toy-grant-without-expiry-admitted"
+        );
+        assert_eq!(result.evaluation.verdict, ToyGrantVerdict::Denied);
+    }
+
+    #[test]
     fn toy_grant_without_expiry_still_authorizes() {
         let mut open = grant(ToyGrantState::Active);
         open.constraints.expires_at = None;

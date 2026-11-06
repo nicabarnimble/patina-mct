@@ -2889,6 +2889,7 @@ mod tests {
     mod boundaries;
     #[cfg(target_os = "macos")]
     mod git_confinement;
+    mod hostile;
 
     use super::*;
     use std::{

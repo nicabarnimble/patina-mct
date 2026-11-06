@@ -368,3 +368,51 @@ fn exercise_adapters(resident: bool) {
         }
     }
 }
+
+#[test]
+#[ignore = "NIC-126 tracked known failure; run by scripts/federation/done.mjs"]
+fn done_governed_runtime_admits_passkey_ledger() {
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path().join("mother");
+    private_fs::ensure_directory(&root).unwrap();
+    let pin = d.path().join("pin.json");
+    let request = d.path().join("request.json");
+    let key = p256::ecdsa::SigningKey::from_slice(&[7; 32]).unwrap();
+    put(
+        &pin,
+        &WebAuthnP256DayKeyV1 {
+            credential_id: URL_SAFE_NO_PAD.encode([8; 32]),
+            public_key_sec1: const_hex::encode(key.verifying_key().to_sec1_bytes()),
+            rp_id: "admin.example.test".into(),
+            origin: "https://admin.example.test".into(),
+        },
+    );
+    let common = [
+        "--root",
+        root.to_str().unwrap(),
+        "--mother",
+        "mother-a",
+        "--ledger-id",
+        "ledger-a",
+        "--registered-root",
+        pin.to_str().unwrap(),
+    ];
+    let prepared = ok(&[&["prepare-genesis"][..], &common].concat());
+    put(&request, &sign_root(prepared, &key));
+    ok(&[
+        &["bootstrap"][..],
+        &common,
+        &["--request", request.to_str().unwrap()],
+    ]
+    .concat());
+    let paths = mct_daemon::MctStartupPaths::supervised(&root, root.join("supervisor.plist"));
+    match mct_daemon::classify_authority_startup(&paths, "ledger-a", "mother-a") {
+        Ok(_) => {}
+        Err(mct_daemon::MctStartupClassificationErrorV1::AuthorityReplayBlocked(reason))
+            if reason.contains("passkey administration") =>
+        {
+            panic!("DONE-REASON: runtime-refuses-passkey-ledger: {reason}")
+        }
+        Err(error) => panic!("DONE-REASON: governed-runtime-startup-failed: {error:?}"),
+    }
+}
