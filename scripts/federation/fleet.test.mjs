@@ -629,9 +629,11 @@ test('stderr diagnostics are assembled before redaction across stream chunks', a
   await session.close();
 });
 
-test('public evidence redacts LAN and SSH values without removing input node names', () => {
-  const c = config(); const result = sanitize({ node: 'a', detail: `${c.hosts[0].ssh} ${c.hosts[1].address}:24863`, identity: c.sshIdentity }, c);
+test('public evidence redacts LAN, SSH and private run-root values without removing input node names', () => {
+  const c = config(); const result = sanitize({ node: 'a', detail: `${c.hosts[0].ssh} ${c.hosts[1].address}:24863`, identity: c.sshIdentity, root: `${c.runRoot}/fleet-run/0` }, c);
   assert.equal(result.node, 'a');
+  assert.equal(result.root, '[test-root]/fleet-run/0');
   for (const h of c.hosts) { assert.ok(!JSON.stringify(result).includes(h.address)); assert.ok(!JSON.stringify(result).includes(h.ssh)); }
   assert.ok(!JSON.stringify(result).includes(c.sshIdentity));
+  assert.ok(!JSON.stringify(result).includes(c.runRoot));
 });

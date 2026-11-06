@@ -70,17 +70,38 @@ git ls-files -z Cargo.toml Cargo.lock crates flake.nix flake.lock |
 ```
 
 On the configured builder, with the vendored Cargo source configuration already
-prepared, run:
+prepared, point to the exact previously accepted PR #107 component artifact and
+run:
 
 ```sh
-bash scripts/federation/build.sh EXPECTED_BUILDER_HOST FULL_SOURCE_COMMIT \
+MCT_REPO_REPORT_COMPONENT=/absolute/private/mct-repo-report.wasm \
+  bash scripts/federation/build.sh EXPECTED_BUILDER_HOST FULL_SOURCE_COMMIT \
   /absolute/shared-target /absolute/new-artifacts-directory
 ```
 
-The script checks hostname and source hashes, builds and tests the helper with
-the daemon, then packages the already-built artifacts. `nix/federation-bundle.nix`
-adds pinned `nft` and `bpftool` utilities. Set `package` to the resulting immutable
-store path. The binaries are test-profile builds, not release/install claims.
+The script checks hostname and source hashes, requires the pinned PR #107
+component digest, builds and tests the helper with the daemon, then packages the
+already-built component with the new native artifacts. `nix/federation-bundle.nix` adds pinned
+`nft` and `bpftool` utilities. Set `package` to the resulting immutable store
+path. The binaries are test-profile builds, not release/install claims.
+
+## NIC-63 mesh job
+
+Run the first two-Mother decomposed job with the same private config and staged
+closure:
+
+```sh
+node scripts/federation/mesh-job.mjs \
+  --config /absolute/private/fleet.json \
+  --evidence /absolute/private/new-mesh-evidence
+```
+
+Mother A executes the arithmetic piece locally and forwards the repo-report
+piece to Mother B. The controller then waits for B's exact directory-read grant
+to expire and submits one more repo-report call. Passing evidence requires B's
+ledger to record `toy_grant_expired` and no runtime start for that uncovered
+call. No `board.post` Toy is needed: the reused directory-read ToyGrant already
+provides the covered/uncovered authority boundary.
 
 ## Gates
 
