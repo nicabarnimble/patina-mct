@@ -1,0 +1,303 @@
+package patina:small-device@0.1.0-draft;
+
+// Design only. Bounds, ownership and cross-field invariants are normative in
+// ../nic-110-shared-contract.md. No Toy, transport or runtime is installed here.
+interface common {
+    // Lowercase hex BLAKE3-256, exactly 64 ASCII bytes.
+    type digest = string;
+    // Unix milliseconds; optional sample times may be unknown, never invented.
+    type timestamp-ms = u64;
+
+    enum profile { pure, read-compute, stateful-event }
+    enum payload-encoding { canonical-json, deterministic-cbor }
+
+    // A registered, versioned sibling schema, not untyped stdout or shell text.
+    record typed-payload {
+        schema-id: string,
+        encoding: payload-encoding,
+        bytes: list<u8>,
+    }
+
+    record budget {
+        linear-memory-bytes: u64,
+        startup-ms: u32,
+        wall-ms: u32,
+        input-bytes: u32,
+        output-bytes: u32,
+        host-value-bytes: u32,
+        accumulated-bytes: u32,
+        host-calls: u32,
+        logging-calls: u32,
+        measure-calls: u32,
+        toy-calls: u32,
+        observations: u32,
+        max-items: u32,
+    }
+
+    record operation-declaration {
+        operation: string,
+        operation-profile: profile,
+        input-schema: string,
+        output-schema: string,
+        minimum-budget: budget,
+        requested-budget: budget,
+    }
+
+    record call-context {
+        job-id: string,
+        task-id: string,
+        call-id: string,
+        parent-call-id: option<string>,
+        attempt: u32,
+        caller-id: string,
+        vision-id: string,
+        project-id: option<string>,
+        classification: string,
+        target-node-id: string,
+        operation: string,
+        artifact-digest: digest,
+        request-digest: digest,
+        operation-profile: profile,
+        effective-budget: budget,
+        deadline: timestamp-ms,
+    }
+
+    // Logical, grant-scoped source identity: never a raw path, UART or address.
+    record source-ref {
+        gateway-node-id: string,
+        resource-id: string,
+        device-id: option<string>,
+        channel-id: option<string>,
+    }
+
+    enum freshness { fresh, stale, unknown }
+    record sample-origin {
+        source: source-ref,
+        observed-at: option<timestamp-ms>,
+        received-at: timestamp-ms,
+        freshness-state: freshness,
+        source-epoch: option<string>,
+        source-sequence: option<u64>,
+        evidence-digest: digest,
+    }
+
+    enum outcome { success, denied, failed, timed-out, cancelled }
+    enum reason {
+        none,
+        not-authorized,
+        invalid-input,
+        unavailable,
+        budget-exceeded,
+        deadline-exceeded,
+        execution-interrupted,
+        effect-unknown,
+        incompatible-artifact,
+        conflict,
+        cancelled,
+        internal-error,
+    }
+    enum completeness { complete, partial }
+    enum effect-state { no-effect, not-started, confirmed, unknown }
+
+    record coverage {
+        completeness-state: completeness,
+        examined: u64,
+        omitted: option<u64>,
+        continuation: option<string>,
+    }
+
+    // Guest-owned data only. Mother validates schemas, sizes and claims.
+    // Siblings may instead return a typed WIT body plus this coverage record;
+    // their schema must define the exact projection into typed-payload.
+    record child-answer {
+        payload: typed-payload,
+        coverage: coverage,
+    }
+
+    record usage {
+        startup-ms: option<u32>,
+        wall-ms: option<u32>,
+        linear-memory-high-water-bytes: option<u64>,
+        input-bytes: u32,
+        output-bytes: option<u32>,
+        host-calls: option<u32>,
+        toy-calls: option<u32>,
+        observations: option<u32>,
+        accumulated-bytes: option<u32>,
+    }
+
+    // Mother-owned terminal envelope, also used when no guest ran.
+    record result-envelope {
+        context: call-context,
+        executor-node-id: string,
+        instance-id: option<string>,
+        boot-id: string,
+        result-outcome: outcome,
+        result-reason: reason,
+        effect: effect-state,
+        answer: option<child-answer>,
+        measured: usage,
+        settled-at: timestamp-ms,
+        audit-ref: string,
+    }
+}
+
+interface receipts {
+    use common.{digest, result-envelope};
+
+    record ledger-position {
+        ledger-id: string,
+        sequence: u64,
+        observation-id: string,
+        entry-hash: digest,
+    }
+
+    enum signature-scheme { ed25519-v1 }
+    enum subject-kind { call-result, fleet-result }
+
+    // Canonical signing preimage is defined in the contract, not WIT ABI bytes.
+    record receipt-statement {
+        contract-version: string,
+        subject: subject-kind,
+        subject-id: string,
+        subject-digest: digest,
+        signer-node-id: string,
+        key-id: string,
+        scheme: signature-scheme,
+        terminal: ledger-position,
+    }
+
+    record signed-receipt {
+        statement: receipt-statement,
+        signature: list<u8>,
+    }
+
+    record receipted-result {
+        envelope: result-envelope,
+        receipt: signed-receipt,
+    }
+}
+
+interface fleet {
+    use common.{digest, timestamp-ms, typed-payload};
+    use receipts.{receipted-result, signed-receipt};
+
+    record node-request {
+        node-id: string,
+        call-id: string,
+        request-digest: digest,
+    }
+
+    record fanout-request {
+        job-id: string,
+        coordinator-node-id: string,
+        caller-id: string,
+        vision-id: string,
+        project-id: option<string>,
+        classification: string,
+        members: list<node-request>,
+        collect-until: timestamp-ms,
+        merge-schema: string,
+    }
+
+    // Coordinator observations: not a fabricated executor failure or receipt.
+    enum missing-reason {
+        not-dispatched,
+        unreachable,
+        reply-deadline,
+        invalid-receipt,
+        incompatible-result,
+    }
+    record no-reply {
+        reason: missing-reason,
+        last-observed-at: timestamp-ms,
+        may-have-executed: bool,
+    }
+    variant node-answer {
+        received(receipted-result),
+        missing(no-reply),
+    }
+    record node-result {
+        request: node-request,
+        answer: node-answer,
+    }
+
+    enum fleet-status { complete, partial, failed }
+    record fleet-envelope {
+        request: fanout-request,
+        revision: u32,
+        supersedes: option<digest>,
+        status: fleet-status,
+        successful: u32,
+        unsuccessful: u32,
+        missing: u32,
+        // A bounded domain merge is optional; node rows and counts always exist.
+        merged-payload: option<typed-payload>,
+        nodes: list<node-result>,
+        settled-at: timestamp-ms,
+    }
+    record receipted-fleet-result {
+        envelope: fleet-envelope,
+        receipt: signed-receipt,
+    }
+}
+
+interface delivery {
+    use common.{digest, timestamp-ms, reason};
+    use receipts.{receipted-result, signed-receipt};
+
+    // References are scoped lookup keys, never bearer capabilities.
+    record queued-call {
+        call-id: string,
+        request-digest: digest,
+        expires-at: timestamp-ms,
+    }
+    record refusal {
+        reason: reason,
+        audit-ref: option<string>,
+    }
+    record unavailable-result {
+        call-id: string,
+        request-digest: digest,
+        receipt: option<signed-receipt>,
+    }
+    variant submission-state {
+        queued(queued-call),
+        running(queued-call),
+        settling(queued-call),
+        terminal(receipted-result),
+        // A retained identity whose exact result cannot currently be replayed.
+        // This is not permission to execute again or proof of non-admission.
+        result-unavailable(unavailable-result),
+        // No signed terminal can be promised before durable admission.
+        not-admitted(refusal),
+    }
+
+    record event-ref {
+        task-id: string,
+        event-id: string,
+        source-sequence: u64,
+        checkpoint-digest: digest,
+    }
+    record handover-item {
+        delivery-id: string,
+        destination-node-id: string,
+        completed-call: receipted-result,
+        event: option<event-ref>,
+    }
+    record handover-ack {
+        delivery-id: string,
+        destination-node-id: string,
+        result-digest: digest,
+    }
+}
+
+// Schema review surface only; sibling worlds use the types and export their
+// own bounded operations. There is deliberately no execute-shell, sign,
+// grant, raw serial, arbitrary fetch or implicit resume function.
+world contract-schema {
+    export common;
+    export receipts;
+    export fleet;
+    export delivery;
+}
