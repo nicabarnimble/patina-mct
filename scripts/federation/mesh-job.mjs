@@ -4,6 +4,7 @@ import { appendFileSync, mkdirSync, readFileSync, realpathSync, statSync, writeF
 import { posix } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { deploy } from './deploy.mjs';
 import { createFleet, createSshTransport, sanitize, validateConfig } from './fleet.mjs';
 
 const TARGET_LOCAL = Object.freeze({ namespace: 'patina:fleet-n0', interface_name: 'work@0.1.0', function_name: 'step' });
@@ -184,6 +185,7 @@ export async function main(args = process.argv.slice(2)) {
   process.once('SIGINT', stop); process.once('SIGTERM', stop);
   const transport = createSshTransport({ onDiagnostic: (node, text) => emit({ stage: 'diagnostic', node, text }) });
   try {
+    await deploy(config, 'two', event => emit({ stage: 'deploy', ...event }));
     const result = await runMeshJob(config, { transport, onStage: emit, signal: abort.signal });
     writeFileSync(posix.join(evidence, 'result.json'), JSON.stringify(result, null, 2) + '\n', { mode: 0o600 });
   } catch (error) {
