@@ -110,20 +110,22 @@ newer 0.2.x patch version will be refused before instantiation (Inferred).
 Pin the Child's WIT deps to 0.2.3 for piece 1, as `mct-repo-report` does, and
 fix the allowlist to semver-compatible matching later.
 
-### Blocks later
-
-**G6. Grants have no person in them.** `ToyGrantSubject` matches child name,
-artifact id, exact artifact version, assignment, and caller node. It never
+**G6. Grants have no person in them.** Revised from "blocks later" after
+reading Astra's doc. `ToyGrantSubject` matches child name, artifact id, exact artifact version, assignment, and caller node. It never
 looks at `CallerIdentity.user_id` (Read: `crates/mct-kernel/src/toy.rs:36-46`,
-`:836-842`). "Grants tied to identity" is not representable today. Piece 1 can
-survive with one human (Doug) and a read-only grant. Piece 2 cannot, because
-"who moved this" is the first question a move or delete raises, and bots need
-narrower grants than Doug (issue question 4). The fix is a principal field in
-the grant subject, matched against an identity Mother verified itself. For
+`:836-842`). "Grants tied to identity" is not representable today. My first
+draft said piece 1 could survive with one human (Doug) and a read-only grant.
+That contradicts my own biggest-risk argument below. An identity-gated piece 1
+whose identity lives only at the edge is the shortcut I warn against. Moves and
+deletes make it worse, because "who moved this" is the first question they
+raise, and bots need narrower grants than Doug (issue question 4). The fix is
+a principal field in the grant subject, matched against an identity Mother verified itself. For
 Pocket ID that means Mother checks the OIDC ID token signature against a
 pinned issuer key that is itself a ledger fact. Caddy `forward_auth` headers
 are transport, not identity. Mother already verifies WebAuthn P-256 for D-58,
 so the crypto is in-tree (Read: `p256` in `mct-daemon/Cargo.toml`).
+
+### Blocks later
 
 **G7. Read-write and read-write+delete collapse to one bit.** wasmtime-wasi
 49 has `FsPerms::{ReadOnly, ReadWrite}` and nothing else (Read:
@@ -240,6 +242,15 @@ interface versions {
 }
 ```
 
+- **A read grant on a dataset root is also a grant on its history.** OpenZFS
+  serves `.zfs/snapshot/<name>/...` by explicit path even when `snapdir` is
+  hidden (Guess, OpenZFS behavior, not tested here). cap-std confines `..` and
+  symlinks, not mount crossings into the snapshot control directory
+  (Inferred). So a person who loses access to a file, or whose file was
+  trashed and purged, can still read old copies through any read grant on that
+  root. Root enrollment must either refuse `.zfs` in the read path or record
+  that the grant includes history. I missed this in my first draft; see
+  Response to Astra.
 - **Reads are almost free.** A dataset mountpoint exposes
   `.zfs/snapshot/<name>/...` read-only. `list-versions` maps to that
   directory. Restore is a read from the snapshot plus a normal `host-fs`
@@ -317,14 +328,152 @@ The guard is cheap if it is decided now:
    ledger growth per browse session. This proves the Child and the API without
    waiting on G1-G3.
 2. **In parallel, unblock nica-unraid.** x86_64 build and image (G1), the
-   Doug decision on G2, the D-entry for G14, and the ingress adapter (G3).
+   Doug decision on G2, the D-entry for G14, the ingress adapter (G3), and the
+   person in the grant (G6).
 3. **Piece 1 on nica-unraid** with the *same approved artifact digest* as the
    Pi. That is the honest proof of "the same Child runs on both".
-4. **Before piece 2,** land the person in the grant (G6) and the typed
-   mutation Toy (G7/G8). Moves and renames are the first ops on it.
+4. **Before piece 2,** land the typed mutation Toy (G7/G8). Moves and renames
+   are the first ops on it.
 5. **Piece 3** adds `write` and `remove` behind `checkpoint` (ZFS section).
 
 ## Response to Astra
 
-Pending. Astra's doc had not appeared on `origin/nicabar-nic118-fs-design` at
-11:04 ET. This section is updated if it lands within the polling window.
+Astra's `docs/design/nic-118-host-fs.md` landed on
+`origin/nicabar-nic118-fs-design` as `a1380d8` at 11:22 ET. I read all 894
+lines after sections 1-4 above were written and pushed. Since then I changed
+only G6's tag and added the `.zfs` history bullet. Both changes are marked in
+place.
+
+Astra's doc is the stronger design document. It has the WIT sketch, a mutation
+state machine with a checked TLA+ model and two negative controls, and a much
+fuller hostile-input list (hard links, nested mounts, special files, reserved
+trash paths). This response covers where we differ.
+
+### Where we agree
+
+- **Multi-Mother: no.** Same answer, same reasons. Astra adds a distinction I
+  lacked. Multi-Mother and multi-Vision are different questions, and many
+  users do not need many Visions.
+- **Standard read-only WASI for reads, typed host operations for
+  mutations.** We both found the `FsPerms::{ReadOnly, ReadWrite}` collapse
+  independently, and both rejected interposing `wasi:filesystem`. Astra's
+  candidate A vs B table states it more clearly than my G7/G8.
+- **The grant has no person in it, and the edge is not the authority.**
+  Astra's G04 and my G6 cite the same `ToyGrantSubject` fields. Astra was
+  right to tag it blocks piece 1, and I changed my tag.
+- **The D-58 runtime split is real.** Astra's G03 and my G11 cite the same
+  line in `passkey-admin.md`.
+- **ZFS is a host helper behind a Toy. It is never a Child, and `/dev/zfs`
+  never goes into Mother.** Same shape. We agree rollback is never an API.
+- **Bounded `read-range` first, WASI 0.3 streams later.** Same sequencing.
+  We both note that `component-model-async` in Cargo is not 0.3 support.
+
+### Where I disagree
+
+**1. Piece 1 has too many prerequisites.** Astra tags twelve gaps as blocks
+piece 1 and puts three preparatory pieces (0a, 0b, 0c) ahead of it. They
+include signed per-call receipts from NIC-110 (G13), a full backup and
+restore drill (G09), and log routing and retention (G08). A read-only grant on
+a read-only mount needs none of these to be usable or safe. The ledger already
+records every admitted call. Losing Mother state means a re-bootstrap, and the
+files are untouched. I would hold piece 1 to the x86_64 image, the root trust
+decision, an ingress, the person in the grant, and ranged reads. Receipts,
+backup drills and log routing belong before mutations (piece 4), when they
+protect something. The risk of the long list is that piece 1 slips, and the
+pressure to ship produces exactly the edge shortcut in my section 4.
+
+**2. 4 KiB read chunks with a signed receipt per chunk do not work for real
+files.** Astra's limits table proposes 4 KiB raw chunks, and its receipt
+section gives every chunk its own receipt. A 10 MB PDF is then 2,560 Child
+invocations, 2,560 sets of ledger facts and 2,560 signatures (arithmetic).
+The whole 2.7 GB `documents` set is about 700,000 (arithmetic). Live ledger
+rotation is off by default (my G13), so every download grows the ledger for
+good. I have not measured bytes per call. If each call writes even 1 KB of
+facts, the ledger grows by a quarter of the bytes served (Guess). The fix is
+my G9. The Child authorizes and names the file. Mother streams the bytes from
+the same cap-std handle under a short-lived content handle. The ledger gets
+one fact per transfer with the final length and digest. That also matches
+Astra's own rule that the HTTP adapter never serves the mount.
+
+**3. Mother should verify the identity provider's signature, not trust an
+adapter's assertion.** Astra's identity model has a relying-party service
+mint a short-lived assertion that Mother accepts "from its configured
+authenticated adapter." That makes the adapter an identity authority. Anyone
+who controls it can mint any principal. If Mother checks the Pocket ID token
+signature against a pinned issuer key recorded in the ledger, the adapter
+only carries tokens and cannot invent people. The browser session handling
+Astra describes (cookies, CSRF, state, nonce) still belongs in the adapter.
+
+**4. Snapshot creation should come before trash, not after.** Astra defers
+snapshot creation and says delete must prove that a snapshot holds the exact
+pre-effect object. A periodic snapshot cannot prove that, as Astra notes. A
+snapshot taken by the Toy immediately before the effect, named after the
+operation ID and recorded in the same intent fact, proves it by construction.
+It needs only `zfs allow snapshot` for the helper user, which is not
+destructive. The per-root trash stays the Pi backend. On nica-unraid it
+removes the trash directory, the trash-in-root filtering problem, and the
+trash quota.
+
+**5. Pi first, not third.** Astra puts Pi qualification after the container
+and after upgrades, and requires trusted AOT with no compile fallback. Linux
+arm64 is the supported target today and Linux x86_64 is not (my G1). A Pi 4
+such as nicamaster can JIT-compile the component now. Running piece 1 there
+first proves the Child, the API and the call costs while the x86_64 image and
+the Unraid decisions are pending. The no-compile AOT rule matters for a Pi 3
+and can stay a later gate.
+
+### What Astra missed
+
+- **The existing root trust check refuses Unraid shares (my G2).** This is
+  the most concrete piece-1 blocker in the code.
+  `resident_directory_read_host_adapters` calls `trusted_directory`, which
+  refuses any directory not owned by root or Mother's uid, and any group- or
+  world-writable directory unless it is root-owned and sticky. Astra lists
+  "which UID/GID" as an open operator question. No choice of UID fixes a
+  `0777` dataset root. Doug must decide on SMB permissions, or MCT must add an
+  explicit ledgered exception, before the first read works.
+- **A read grant exposes the dataset's snapshot history through `.zfs`.**
+  Neither of us had this at first; I added it to my ZFS section after reading
+  Astra's reserved-path discussion. Astra correctly requires trash and staging
+  to be unreachable through the read preopen. The same rule applies to
+  `.zfs/snapshot`, which holds every old and purged copy. Root enrollment must
+  refuse it or record that the grant includes history.
+- **The x86_64 slot is deliberately closed.** Astra says to "add Linux x86-64
+  packaging if needed." `scripts/test-release-platform.sh` fails if that
+  target ever emits a release, and D-52 names arm64 only. Opening it is a
+  decision plus a test change, not only packaging.
+- **Every Child update re-issues every grant (my G10).** Grants match the
+  exact `artifact_version`. Astra's grant binding keeps that exactness, which
+  is right, but the ongoing-update cost is missing from the long-lived-app
+  analysis. Without a ledgered "supersede to digest X" step, each Child
+  release means re-granting every person by hand.
+- **The repo still forbids this deployment.** `finish-owner-gates.md` and
+  `HANDOFF-MCT-FINISH.md` say no Unraid deployments are authorized. Astra
+  notes that the request does not authorize a live deploy. Neither doc can
+  proceed without a DECISIONS.md entry from Doug.
+- **Mother's own dataset must be fenced from the ZFS helper.** Astra's G09
+  correctly requires that a restore keeps revoked grants denied. The helper
+  should also refuse every operation on Mother's state dataset, and no grant
+  should be able to name it. A ZFS rollback there is a coherent rollback the
+  hash chain cannot detect.
+- **The UI library pick needs a maintenance check now.** Astra's first
+  choice, Chonky, was last published to npm as 2.3.2, with registry metadata
+  last modified 2022-04-12 (Measured: `npm view chonky version time.modified`).
+  Astra already lists maintenance as a check. On that evidence it would
+  likely fail, so the UI evaluation should start with a second candidate.
+
+### What Astra caught that I missed
+
+These are good, and I would adopt them as written:
+
+- Guest-writable SMB bypasses and races Mother. Mother audits only what it
+  mediates, and mutations should stay off on guest-writable roots.
+- `preopened_dir` takes a path, so an enrolled root can be swapped between
+  validation and open. A handle-preserving seam is needed (Astra G05).
+- Standard WASI file operations are not charged to the invocation budget.
+  Only custom host calls are (Astra G14).
+- Readiness in `status.rs` mostly reports whether Iroh is bound (Astra G07).
+- Pocket ID is an OIDC provider, not a Caddy `forward_auth` endpoint, so Pi
+  Grok's edge sketch needs a relying party either way.
+- Missing-mount failure. Docker must not create an empty directory where the
+  dataset should be.
