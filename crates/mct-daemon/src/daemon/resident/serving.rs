@@ -644,13 +644,19 @@ where
         );
     }
     let secret_key_hex = load_or_create_node_secret_key_hex(&config.identity_path)?;
-    let mut endpoint = MotherIrohEndpoint::bind(iroh_config_with_bind(
-        secret_key_hex,
-        config.relay_default,
-        config.bind_addrs,
-    ))
-    .await
-    .context("bind resident Mother Iroh endpoint")?;
+    // Governed (D-58): signed passkey administration shares this process and
+    // its single ledger writer with Child execution.
+    let governed = ledger.is_governed();
+    let mut endpoint_config =
+        iroh_config_with_bind(secret_key_hex, config.relay_default, config.bind_addrs);
+    if governed {
+        endpoint_config
+            .accepted_alpns
+            .push(mct_iroh::MCT_ADMIN_ALPN.into());
+    }
+    let mut endpoint = MotherIrohEndpoint::bind(endpoint_config)
+        .await
+        .context("bind resident Mother Iroh endpoint")?;
     let snapshot = endpoint.snapshot();
     if snapshot.endpoint_id != identity.endpoint_id {
         bail!(
@@ -818,6 +824,13 @@ where
                 capability_view: None,
                 capability_view_provider: Some(capability_view_provider),
                 receiver_authority_provider,
+                admin_handler: governed.then(|| {
+                    let owner = ledger.clone();
+                    mct_iroh::MctIrohAdminHandler::new(move |request| {
+                        let owner = owner.clone();
+                        async move { owner.administer(request).await }
+                    })
+                }),
                 ..MctIrohConcurrentServeConfig::new(observation_sink)
             },
             current_timestamp,

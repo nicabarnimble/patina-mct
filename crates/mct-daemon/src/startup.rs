@@ -1558,6 +1558,14 @@ pub fn finalize_authority_startup(
     let pre_observation_replay = replay_authority_entries(&pre_observation_entries)
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let canonical_hash = authority_state_hash(&pre_observation_replay.state)?;
+    if pre_observation_replay.state.passkey_admin.is_some() {
+        return finalize_governed_startup(
+            ledger,
+            &tenure_fact,
+            pre_observation_entries.len(),
+            canonical_hash,
+        );
+    }
     let config_hash = authority_state_hash(&AuthorityStateV1::default())?;
     let config_input = match fs::symlink_metadata(config_path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => MctLegacyAuthorityInputV1 {
@@ -1781,6 +1789,100 @@ pub fn finalize_authority_startup(
         report,
         proof,
         authority_ready,
+    })
+}
+
+/// Governed (D-58) startup: the verified replay is the projection, and
+/// `config.json` and SQLite carry no authority to compare or import.
+fn finalize_governed_startup(
+    ledger: &mut JsonlObservationLedger,
+    tenure_fact: &mct_observation::EpochEstablishedFactV1,
+    entry_count: usize,
+    canonical_hash: String,
+) -> anyhow::Result<MctStartupAuthorityReadinessV1> {
+    let startup_class = tenure_fact.establishment.startup_class;
+    let authority_epoch = tenure_fact.authority_epoch.as_str();
+    let generation = tenure_fact.resulting_authority.generation;
+    let mother_node_id = tenure_fact.mother_node_id.clone();
+    let ledger_id = tenure_fact.ledger_id.clone();
+    let now = jiff::Timestamp::now().to_string();
+    let report_id = format!("startup-drift:{authority_epoch}:{entry_count}");
+    let normalized_inputs = serde_json::json!({
+        "schema": "mct-startup-posture/v1",
+        "profile": "governed",
+        "startup_class": startup_class,
+        "report_id": report_id,
+        "canonical_authority_state_hash": canonical_hash,
+        "blocking_reasons": Vec::<String>::new(),
+    });
+    let context = StartupObservationContext {
+        now: &now,
+        mother_node_id: &mother_node_id,
+        ledger_id: &ledger_id,
+        generation,
+    };
+    ledger.append_batch_before_effect(
+        [
+            startup_observation(
+                &context,
+                format!("obs:startup-posture:{authority_epoch}"),
+                ObservationKind::LifecycleTransitionRecorded,
+                SourcePlane::Storage,
+                format!("governed Mother startup class {startup_class:?} recorded"),
+                format!(
+                    "mct-startup-posture-v1:{}",
+                    serde_json::to_string(&normalized_inputs)?
+                ),
+            ),
+            startup_observation(
+                &context,
+                format!("obs:startup-drift:{authority_epoch}"),
+                ObservationKind::NodeHealthReported,
+                SourcePlane::Storage,
+                format!("governed authority evaluated report_id={report_id} authority_ready=true"),
+                format!(
+                    "mct-startup-drift-v1:{}",
+                    serde_json::to_string(&normalized_inputs)?
+                ),
+            ),
+        ],
+        now.clone(),
+    )?;
+    let head = ledger.verified_head()?;
+    let replay = ledger.verified_replay()?.clone();
+    let proven = crate::governed_proven_projection(&head, &replay)
+        .map_err(|deny| anyhow::anyhow!("governed authority unavailable: {deny:?}"))?;
+    let cursor = proven.cursor;
+    let report = AuthorityDriftReportV1 {
+        schema: "mct-authority-drift-report/v1".into(),
+        report_id,
+        observed_at: now,
+        startup_class,
+        canonical: MctCanonicalAuthorityDriftV1 {
+            mother_node_id,
+            ledger_id,
+            head_sequence: head.local_sequence,
+            head_entry_hash: head.entry_hash.clone(),
+            grants_authority: cursor.grants_authority.clone(),
+            authority_state_hash: cursor.authority_state_hash.clone(),
+        },
+        projection: MctProjectionAuthorityDriftV1 {
+            status: MctAuthorityProjectionDriftStatusV1::Current,
+            through_sequence: Some(cursor.through_sequence),
+            through_entry_hash: Some(cursor.through_entry_hash.clone()),
+            projection_hash: Some(cursor.projection_hash.clone()),
+            proof_denial: None,
+        },
+        legacy_inputs: Vec::new(),
+        blocking_reasons: Vec::new(),
+        authority_ready: true,
+    };
+    Ok(MctStartupAuthorityReadinessV1 {
+        report,
+        proof: UsableAuthorityProjectionProofV1::Usable {
+            cursor: Box::new(cursor),
+        },
+        authority_ready: true,
     })
 }
 
