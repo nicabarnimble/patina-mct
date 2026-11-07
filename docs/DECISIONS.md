@@ -720,20 +720,24 @@ into the new passkey profile.
 ### D-60 Passkey-governed Mother runs Children; D-40 built as an unkeyed fence
 
 - **Owner direction:** Doug approved NIC-126 (Piece 3 of NIC-123).
-- **Status:** built for the ledger, snapshot and refusal paths. Resident startup
-  finalize and serve on a passkey ledger are not wired yet (tracked as
-  `governed-resident-boot-not-wired`).
-- **Decision:** a passkey-rooted ledger is the governed profile. Four signed commands
-  (`/children/approve`, `/children/revoke`, `/toys/grant-directory-read`,
-  `/toys/revoke`) are the only Child-runtime authority, and replay applies each
-  command's body. The execution snapshot is built from the verified replay, and
-  `config.json` approvals and peers are ignored. Every Unix-socket and offline
+- **Status:** built. One resident process boots on a passkey ledger and serves
+  Child calls and `mct/admin/1`. Artifact staging and peer add/revoke are
+  governed commands. Doug's live tap and the Pi run are pending
+  ([done/governed-profile.md](done/governed-profile.md)).
+- **Decision:** a passkey-rooted ledger is the governed profile. Signed commands
+  (`/artifacts/stage`, `/children/approve`, `/children/revoke`,
+  `/toys/grant-directory-read`, `/toys/revoke`, `/peers/add`, `/peers/revoke`)
+  are the only Child-runtime authority. Replay applies each ledger route's
+  body, and staging runs only after its admission fact is committed. The
+  execution snapshot is built from the verified replay. `config.json` is a
+  projection, and a peer survives only when the ledger names it identically. Every Unix-socket and offline
   mutation is refused before any effect. This partly builds D-08 for that profile.
 - **D-40:** built as an equivalent of option D. Unkeyed calls take the
   writer-admitted BeforeEffect dispatch reservation under their call ID, so lost
   SQLite history cannot launch a call ID twice. A repeat replays the recorded
   reply or is refused. An unkeyed call whose deadline outlives the 12-minute
   fence is refused (`UnkeyedDeadlineBeyondFence`), so every retry is fenced or
-  expired. The reservation precedes routing, so a crash before launch settles
+  expired. This 12-minute cap is a known limitation pending Doug's decision,
+  not a ratified policy. The reservation precedes routing, so a crash before launch settles
   as interrupted, never as a second run.
 - **Source:** [done/governed-profile.md](done/governed-profile.md).
