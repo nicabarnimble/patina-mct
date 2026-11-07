@@ -491,7 +491,7 @@ All six were locked on 2026-10-14 in the admin-keys design. Full text:
 ### D-40 Child-start ledger fact: option D
 
 - **Date:** 2026-10-18.
-- **Status:** **proposed.**
+- **Status:** **built** as an equivalent (unkeyed dispatch fence), see D-60.
 - **Decision:** the ledger writer itself admits a local Child launch and
   appends a `ChildInvoked` BeforeEffect fact before launch; a writer-level guard
   refuses a second admission of the same `call_id`; recovery becomes
@@ -716,3 +716,24 @@ into the new passkey profile.
   default to 30 days and accept `--expires-at`; the wire request always carries the exact value.
 - **Compatibility:** existing open-ended grants replay unchanged and deny at evaluation (D-02).
   Re-issue them with an expiry. Nothing is rewritten in the ledger.
+
+### D-60 Passkey-governed Mother runs Children; D-40 built as an unkeyed fence
+
+- **Owner direction:** Doug approved NIC-126 (Piece 3 of NIC-123).
+- **Status:** built for the ledger, snapshot and refusal paths. Resident startup
+  finalize and serve on a passkey ledger are not wired yet (tracked as
+  `governed-resident-boot-not-wired`).
+- **Decision:** a passkey-rooted ledger is the governed profile. Four signed commands
+  (`/children/approve`, `/children/revoke`, `/toys/grant-directory-read`,
+  `/toys/revoke`) are the only Child-runtime authority, and replay applies each
+  command's body. The execution snapshot is built from the verified replay, and
+  `config.json` approvals and peers are ignored. Every Unix-socket and offline
+  mutation is refused before any effect. This partly builds D-08 for that profile.
+- **D-40:** built as an equivalent of option D. Unkeyed calls take the
+  writer-admitted BeforeEffect dispatch reservation under their call ID, so lost
+  SQLite history cannot launch a call ID twice. A repeat replays the recorded
+  reply or is refused. An unkeyed call whose deadline outlives the 12-minute
+  fence is refused (`UnkeyedDeadlineBeyondFence`), so every retry is fenced or
+  expired. The reservation precedes routing, so a crash before launch settles
+  as interrupted, never as a second run.
+- **Source:** [done/governed-profile.md](done/governed-profile.md).
