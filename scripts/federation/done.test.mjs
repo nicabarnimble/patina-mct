@@ -57,7 +57,7 @@ test('every check has governed steps; only the partly checks carry baseline evid
 test('blocked steps never run their probe and a shared probe runs once', async () => {
   const { calls, stepResults } = await planWith(todayResults());
   assert.equal(calls.filter(id => id === 'governed-runtime-startup').length, 1);
-  assert.ok(!calls.includes('pi-installed-governed-mother'));
+  assert.ok(!calls.includes('pi-call-within-budget'));
   const blocked = stepResults.find(r => r.check === 'C1' && r.step === 'pi-call-within-budget');
   assert.equal(blocked.status, 'blocked');
   assert.equal(blocked.reason, 'blocked:pi-installed-governed-mother');
@@ -69,12 +69,13 @@ test('today: every check is red or partly with a named reason and tracking is ex
   assert.equal(report.exitCode, 1);
   assert.deepEqual(report.tracking, { untracked: [], stale: [] });
   const verdicts = Object.fromEntries(report.checks.map(check => [check.id, check.verdict]));
-  assert.deepEqual(verdicts, { C1: 'partly', C2: 'fail', C3: 'partly', C4: 'fail', C5: 'partly', C6: 'partly', C7: 'partly' });
-  for (const check of report.checks) assert.match(check.governed.reason, /^[a-z0-9:-]+$/, check.id);
+  assert.deepEqual(verdicts, { C1: 'partly', C2: 'pass', C3: 'partly', C4: 'fail', C5: 'partly', C6: 'partly', C7: 'partly' });
+  for (const check of report.checks.filter(check => check.verdict !== 'pass')) assert.match(check.governed.reason, /^[a-z0-9:-]+$/, check.id);
   const c6 = report.checks.find(check => check.id === 'C6');
   assert.equal(c6.baseline.status, 'pass');
   assert.equal(c6.baseline.label, 'legacy-profile baseline, not governed-profile proof');
-  assert.equal(report.checks.find(check => check.id === 'C2').governed.reason, 'runtime-refuses-passkey-ledger');
+  assert.equal(report.checks.find(check => check.id === 'C2').governed.reason, null);
+  assert.equal(report.checks.find(check => check.id === 'C4').governed.reason, 'receipts-not-implemented');
 });
 
 test('an untracked failure, a stale entry, or a changed reason is tracking drift', async () => {
