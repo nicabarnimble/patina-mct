@@ -665,14 +665,9 @@ pub fn classify_authority_startup(
     let replay = replay_authority_entries(&entries).map_err(|error| {
         MctStartupClassificationErrorV1::AuthorityReplayBlocked(error.to_string())
     })?;
-    // Recovery facts are understood by storage but live canonical consumers and
-    // authenticated ingress are not enabled yet. Never serve legacy UID/admin
-    // paths through this authority; unsupported is not absent or virgin.
-    if replay.state.passkey_admin.is_some() {
-        return Err(MctStartupClassificationErrorV1::AuthorityReplayBlocked(
-            "passkey administration cannot run through legacy UID/offline runtime".into(),
-        ));
-    }
+    // A passkey-rooted ledger is the D-58 governed profile: its Child authority
+    // comes from signed passkey facts and every Unix-socket and offline mutation
+    // path refuses it. Other strict profiles still have no runtime.
     if replay.state.admin_genesis.is_some() {
         return Err(MctStartupClassificationErrorV1::AuthorityReplayBlocked(
             "strict admin genesis requires the authenticated cutover runtime".into(),

@@ -25,6 +25,20 @@ pub fn execute_passkey_administration(
         PasskeyAdminActionV1::Command { route, body, .. } => {
             // Route policy is adapter-owned. Never use request.scope as the
             // required scope. Unknown/unmigrated routes cannot acquire authority.
+            if let Some(scope) = mct_observation::governed_route_scope(route) {
+                // The committed fact is the change; replay applies its body.
+                let route = route.clone();
+                ledger.execute_passkey_command(request, &route, scope, |_| Ok(()))?;
+                let replay = ledger.verified_replay()?;
+                let runtime = &replay
+                    .state
+                    .passkey_admin
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("missing passkey provenance"))?
+                    .runtime;
+                return Ok(json!({"authority":replay.current_authority,"route":route,
+                    "children":runtime.children.len(),"toy_grants":runtime.toy_grants.len()}));
+            }
             if route != "/status" || !body.is_empty() {
                 bail!("unmigrated or malformed admin command");
             }

@@ -10,8 +10,10 @@ use mct_kernel::{
 };
 use mct_observation::{
     AuthorityProjectionCursorV1, AuthorityProjectionDenyReasonV1, AuthorityProjectionExpectationV1,
-    AuthorityProjectionLedgerEvidenceV1, ObservationLedgerError, UsableAuthorityProjectionProofV1,
-    authority_state_hash,
+    AuthorityProjectionHashInputV1, AuthorityProjectionLedgerEvidenceV1,
+    AuthorityProjectionStatusV1, GovernedChildStateV1, GovernedRuntimeV1, ObservationLedgerError,
+    UsableAuthorityProjectionProofV1, authority_projection_hash, authority_state_hash,
+    directory_read_contract,
 };
 use std::path::Path;
 
@@ -120,6 +122,105 @@ pub fn authority_projection_expectation_from_verified(
     })
 }
 
+/// On a passkey-rooted (governed) ledger the verified replay is the projection:
+/// there is no second store that could disagree with the ledger.
+pub fn governed_proven_projection(
+    head: &mct_observation::LedgerVerifiedHead,
+    replay: &mct_observation::AuthorityReplayV1,
+) -> Result<ProvenAuthorityProjectionV1, LocalExecutionAuthoritySnapshotDenyV1> {
+    let blocked = |_| LocalExecutionAuthoritySnapshotDenyV1::AuthorityReplayBlocked;
+    if replay.state.passkey_admin.is_none() {
+        return Err(LocalExecutionAuthoritySnapshotDenyV1::AuthorityReplayBlocked);
+    }
+    let expectation = authority_projection_expectation_from_verified(head, replay)?;
+    let projection_hash = authority_projection_hash(&AuthorityProjectionHashInputV1 {
+        source_mother_node_id: head.mother_node_id.clone(),
+        source_ledger_id: head.ledger_id.clone(),
+        through_sequence: head.local_sequence,
+        through_observation_id: head.observation_id.clone(),
+        through_entry_hash: head.entry_hash.clone(),
+        grants_authority: expectation.grants_authority.clone(),
+        authority_state_hash: expectation.authority_state_hash.clone(),
+        projection_status: AuthorityProjectionStatusV1::Current,
+    })
+    .map_err(blocked)?;
+    let cursor = AuthorityProjectionCursorV1 {
+        schema_version: 1,
+        projection_id: "authority-state-v1".into(),
+        projection_kind: "governed_ledger_replay".into(),
+        source_mother_node_id: head.mother_node_id.clone(),
+        source_ledger_id: head.ledger_id.clone(),
+        through_sequence: head.local_sequence,
+        through_observation_id: head.observation_id.clone(),
+        through_entry_hash: head.entry_hash.clone(),
+        grants_authority: expectation.grants_authority,
+        authority_state_hash: expectation.authority_state_hash,
+        projection_hash,
+        projection_status: AuthorityProjectionStatusV1::Current,
+        updated_at: crate::current_timestamp_string(),
+    };
+    Ok(ProvenAuthorityProjectionV1 {
+        projection: AuthorityProjectionSnapshotV1 {
+            cursor: cursor.clone(),
+            state: replay.state.clone(),
+            facts: replay.facts.clone(),
+        },
+        cursor,
+    })
+}
+
+/// Governed approvals and assignments replace whatever `config.json` holds; a
+/// governed Mother has no unsigned peers.
+fn apply_governed_runtime(config: &mut crate::MctDaemonConfig, runtime: &GovernedRuntimeV1) {
+    config.peers.clear();
+    config.child_approvals.clear();
+    config.child_assignments.clear();
+    for child in runtime.children.values() {
+        let Ok(artifact_id) = mct_kernel::ComponentArtifactId::new(child.artifact_id.clone())
+        else {
+            continue;
+        };
+        let active = child.state == GovernedChildStateV1::Approved;
+        config.child_approvals.insert(
+            child.child_name.clone(),
+            crate::MctStoredChildApproval {
+                manifest_hash: Some(child.manifest_hash.clone()),
+                child_name: child.child_name.clone(),
+                artifact_id: artifact_id.clone(),
+                artifact_version: child.artifact_version.clone(),
+                approval_state: if active {
+                    mct_kernel::ChildApprovalState::Approved
+                } else {
+                    mct_kernel::ChildApprovalState::Revoked
+                },
+                vision_id: child.vision_id.clone(),
+                node_id: child.node_id.clone(),
+                project_id: None,
+                policy_revision: child.policy_revision,
+                updated_at: child.decided_at.to_string(),
+            },
+        );
+        config.child_assignments.insert(
+            child.child_name.clone(),
+            crate::MctStoredChildAssignment {
+                child_name: child.child_name.clone(),
+                artifact_id,
+                artifact_version: child.artifact_version.clone(),
+                assignment_state: if active {
+                    mct_kernel::ChildAssignmentState::Active
+                } else {
+                    mct_kernel::ChildAssignmentState::Revoked
+                },
+                vision_id: child.vision_id.clone(),
+                node_id: child.node_id.clone(),
+                project_id: None,
+                policy_revision: child.policy_revision,
+                updated_at: child.decided_at.to_string(),
+            },
+        );
+    }
+}
+
 /// Proves the stored projection usable for exactly `expectation`.
 pub fn prove_authority_projection(
     state: &MctRuntimeStateStore,
@@ -183,6 +284,15 @@ pub fn local_execution_authority_snapshot_from_verified(
         .map_err(|_| LocalExecutionAuthoritySnapshotDenyV1::LocalPolicyUnavailable)?
         .local_identity
         .ok_or(LocalExecutionAuthoritySnapshotDenyV1::LocalPolicyUnavailable)?;
+    if replay.state.passkey_admin.is_some() {
+        return local_execution_authority_snapshot_from_proven(
+            governed_proven_projection(&head, &replay)?,
+            config_path,
+            children_dir,
+            state_path,
+            Ok(evaluated_at),
+        );
+    }
     let expectation = authority_projection_expectation_from_verified(&head, &replay)?;
     let state = MctRuntimeStateStore::open(state_path).map_err(|_| {
         LocalExecutionAuthoritySnapshotDenyV1::AuthorityProjection(
@@ -212,17 +322,37 @@ pub fn local_execution_authority_snapshot_from_proven(
 ) -> Result<LocalExecutionAuthoritySnapshot, LocalExecutionAuthoritySnapshotDenyV1> {
     let evaluated_at =
         mother_time.map_err(|_| LocalExecutionAuthoritySnapshotDenyV1::MotherClockUnavailable)?;
-    let config = MctDaemonConfigStore::new(config_path)
+    let mut config = MctDaemonConfigStore::new(config_path)
         .load()
         .map_err(|_| LocalExecutionAuthoritySnapshotDenyV1::LocalPolicyUnavailable)?;
-    let identity = config
-        .local_identity
-        .as_ref()
-        .ok_or(LocalExecutionAuthoritySnapshotDenyV1::LocalPolicyUnavailable)?;
     let ProvenAuthorityProjectionV1 {
         cursor: proven_cursor,
         projection,
     } = proven;
+    let governed = projection
+        .state
+        .passkey_admin
+        .as_ref()
+        .map(|passkey| passkey.runtime.clone());
+    if let Some(runtime) = &governed {
+        apply_governed_runtime(&mut config, runtime);
+    }
+    let identity = config
+        .local_identity
+        .as_ref()
+        .ok_or(LocalExecutionAuthoritySnapshotDenyV1::LocalPolicyUnavailable)?;
+    let (toy_catalog, toy_grants, watch_scopes) = match governed {
+        Some(runtime) => (
+            vec![directory_read_contract()],
+            runtime.toy_grants.into_values().collect(),
+            Vec::new(),
+        ),
+        None => (
+            projection.state.toy_catalog.into_values().collect(),
+            projection.state.toy_grants.into_values().collect(),
+            projection.state.watch_scopes.into_values().collect(),
+        ),
+    };
     let state = MctRuntimeStateStore::open(state_path)
         .map_err(|_| LocalExecutionAuthoritySnapshotDenyV1::LocalPolicyUnavailable)?;
 
@@ -314,9 +444,9 @@ pub fn local_execution_authority_snapshot_from_proven(
             grants_authority_epoch: grants_authority.authority_epoch,
             grants_authority_generation: grants_authority.generation,
             grants_authority_observation_id: grants_authority.source_authority_observation_id,
-            toy_catalog: projection.state.toy_catalog.into_values().collect(),
-            toy_grants: projection.state.toy_grants.into_values().collect(),
-            watch_scopes: projection.state.watch_scopes.into_values().collect(),
+            toy_catalog,
+            toy_grants,
+            watch_scopes,
             policy_revision: identity.policy_revision,
             vision_policy_revision: identity.policy_revision,
             child_local_node_id: child_projection.local_node_id,

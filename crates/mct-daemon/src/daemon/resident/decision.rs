@@ -1225,6 +1225,160 @@ mod tests {
         assert_eq!(outcomes, ["denied", "allowed", "denied"]);
     }
 
+    #[test]
+    fn done_c2_day_key_commands_govern_the_child_route_and_its_directory_grant() {
+        use mct_kernel::AdminKeyScopeV1 as Scope;
+        let dir = tempfile::tempdir().unwrap();
+        let ledger_path = dir.path().join("observations.jsonl");
+        let config_path = dir.path().join("config.json");
+        let state_path = dir.path().join("state.sqlite");
+        let children_dir = dir.path().join("children");
+        write_resident_wasm_child(&children_dir);
+        let child = load_children_from_dir(MctChildLoadOptions::new(children_dir.clone())).children
+            [0]
+        .clone();
+        MctDaemonConfigStore::new(&config_path)
+            .ensure_local_identity(
+                MctOperatorNodeScope::default(),
+                dir.path().join("identity.hex"),
+            )
+            .unwrap();
+        let mut governed = crate::passkey_fixture::GovernedLedger::create(&ledger_path);
+        let snapshot = || {
+            mct_daemon::local_execution_authority_snapshot_at(
+                &ledger_path,
+                &config_path,
+                &children_dir,
+                &state_path,
+                Ok(current_timestamp()),
+            )
+            .unwrap()
+        };
+        let mut call = resident_test_call(TraceId::new("trace-governed-c2").unwrap());
+        call.authority_context
+            .expected_receiver_grants_authority
+            .generation = u64::MAX;
+        let route = |snapshot: &LocalExecutionAuthoritySnapshot| {
+            authorize_resident_child_from_snapshot(snapshot, vec![child.clone()], &call).unwrap()
+        };
+        assert!(
+            matches!(route(&snapshot()), RouteDisposition::Denied { .. }),
+            "config.json grants nothing on a governed Mother"
+        );
+
+        governed
+            .command(
+                "/children/approve",
+                Scope::ApproveChild,
+                serde_json::json!({
+                    "child_name": child.name,
+                    "artifact_id": child.artifact_id,
+                    "artifact_version": child.version,
+                    "manifest_hash": format!("sha256:{}", child.manifest_digest.sha256),
+                    "vision_id": "vision-local",
+                    "policy_revision": 1
+                }),
+            )
+            .unwrap();
+        assert!(matches!(route(&snapshot()), RouteDisposition::Local { .. }));
+
+        let root = format!(
+            "file://{}",
+            std::fs::canonicalize(dir.path()).unwrap().display()
+        );
+        let expires = jiff::Timestamp::now()
+            .checked_add(jiff::SignedDuration::from_hours(1))
+            .unwrap()
+            .to_string();
+        let mut open_ended = serde_json::json!({
+            "grant_id": "dr-1", "child_name": child.name, "canonical_root": root
+        });
+        let before = std::fs::read(&ledger_path).unwrap();
+        assert!(
+            governed
+                .command(
+                    "/toys/grant-directory-read",
+                    Scope::WatchGrant,
+                    open_ended.clone()
+                )
+                .is_err()
+        );
+        assert_eq!(std::fs::read(&ledger_path).unwrap(), before);
+        open_ended["expires_at"] = expires.into();
+        governed
+            .command("/toys/grant-directory-read", Scope::WatchGrant, open_ended)
+            .unwrap();
+        let evaluate = |snapshot: &LocalExecutionAuthoritySnapshot| {
+            mct_kernel::evaluate_toy_grant_for_snapshot(
+                &call,
+                &mct_kernel::ToyGrantEvaluationRequest {
+                    data_authority: None,
+                    toy_id: ToyId::new(mct_observation::GOVERNED_DIRECTORY_READ_TOY_ID).unwrap(),
+                    subject: ToyGrantSubject {
+                        child_name: child.name.clone(),
+                        artifact_id: child.artifact_id.clone(),
+                        artifact_version: child.version.clone(),
+                        assignment_id: Some(
+                            ChildAssignmentId::new(format!("assignment:{}", child.name)).unwrap(),
+                        ),
+                        caller_node_id: Some(call.caller.node_id.clone()),
+                    },
+                    child_instance_id: ChildInstanceId::new("instance-governed").unwrap(),
+                    action: mct_observation::GOVERNED_DIRECTORY_READ_ACTION.into(),
+                    resource_id: Some(root.clone()),
+                    node_id: MctNodeId::new("local-mct").unwrap(),
+                    now: snapshot.mother_clock().evaluated_at().clone(),
+                    ids: mct_kernel::ToyGrantEvaluationIds {
+                        evaluation_id: mct_kernel::ToyGrantEvaluationId::new("eval-governed")
+                            .unwrap(),
+                        decision_id: DecisionId::new("decision-governed").unwrap(),
+                        observation_id: ObservationId::new("obs-governed-eval").unwrap(),
+                        authorized_toy_call_id: mct_kernel::AuthorizedToyCallId::new(
+                            "auth-governed",
+                        )
+                        .unwrap(),
+                    },
+                },
+                snapshot,
+            )
+        };
+        let granted = snapshot();
+        let grant = granted
+            .canonical_grants()
+            .toy_grants()
+            .iter()
+            .find(|grant| grant.grant_id.as_str() == "dr-1")
+            .unwrap();
+        assert_eq!(
+            grant.issuer_id, "ed25519:ops",
+            "the grant names its day key"
+        );
+        assert!(evaluate(&granted).is_allowed());
+
+        governed
+            .command(
+                "/toys/revoke",
+                Scope::WatchRevoke,
+                serde_json::json!({"grant_id": "dr-1"}),
+            )
+            .unwrap();
+        assert_eq!(
+            evaluate(&snapshot()).evaluation.reason_code,
+            mct_kernel::ToyGrantReasonCode::RevokedGrant
+        );
+        governed
+            .command(
+                "/children/revoke",
+                Scope::RevokeChild,
+                serde_json::json!({"child_name": child.name}),
+            )
+            .unwrap();
+        assert!(matches!(
+            route(&snapshot()),
+            RouteDisposition::Denied { .. }
+        ));
+    }
+
     fn route_from_replayed_logging_grant(
         expires_at: Option<Timestamp>,
         evaluated_at: &str,

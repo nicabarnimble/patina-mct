@@ -224,7 +224,7 @@ fn exercise_adapters(resident: bool) {
     put(&request, &sign_root(prepared, &key));
     ok(&[&["bootstrap"][..], &common, &root_args, &request_args].concat());
     let paths = mct_daemon::MctStartupPaths::supervised(&root, root.join("supervisor.plist"));
-    assert!(mct_daemon::classify_authority_startup(&paths, "ledger-a", "mother-a").is_err());
+    assert!(mct_daemon::classify_authority_startup(&paths, "ledger-a", "mother-a").is_ok());
     let ledger = mct_observation::JsonlObservationLedger::open_read_only(
         &paths.ledger,
         "ledger-a",
@@ -370,7 +370,6 @@ fn exercise_adapters(resident: bool) {
 }
 
 #[test]
-#[ignore = "NIC-126 tracked known failure; run by scripts/federation/done.mjs"]
 fn done_governed_runtime_admits_passkey_ledger() {
     let d = tempfile::tempdir().unwrap();
     let root = d.path().join("mother");

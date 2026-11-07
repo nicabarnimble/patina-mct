@@ -12,7 +12,9 @@ pub use governed_runtime::{
     governed_route_scope,
 };
 mod passkey_admin;
-pub use passkey_admin::{PasskeyAdminCanonicalV1, PasskeyAdminFactV1, PasskeyGenesisSetupV1};
+pub use passkey_admin::{
+    PasskeyAdminCanonicalV1, PasskeyAdminFactV1, PasskeyGenesisSetupV1, ledger_is_passkey_governed,
+};
 mod admin_genesis;
 #[cfg(test)]
 mod passkey_admin_tests;

@@ -120,6 +120,8 @@ pub(crate) struct ResidentLedgerWriter {
     task: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     authority_order: Arc<MotherAuthorityOrderV1>,
     cached_tip: Arc<std::sync::Mutex<CachedLedgerTip>>,
+    /// Passkey-rooted ledger: authority changes only through signed commands.
+    governed: bool,
 }
 
 enum ResidentLedgerCommand {
@@ -206,6 +208,14 @@ fn projected_authority(
         .verified_replay()
         .map_err(|error| error.to_string())?
         .clone();
+    if replay.state.passkey_admin.is_some() {
+        let proven = mct_daemon::governed_proven_projection(&head, &replay);
+        return Ok(ResidentProjectedAuthority {
+            head,
+            replay,
+            proven,
+        });
+    }
     let state = MctRuntimeStateStore::open(state_path).map_err(|error| error.to_string())?;
     state
         .publish_authority_projection_from_replay(&head, &replay)
@@ -427,6 +437,7 @@ impl ResidentLedgerWriter {
             task: Arc::new(std::sync::Mutex::new(Some(task))),
             authority_order: Arc::new(MotherAuthorityOrderV1::unavailable()),
             cached_tip: Arc::new(std::sync::Mutex::new(CachedLedgerTip::default())),
+            governed: false,
         }
     }
 
@@ -501,6 +512,7 @@ impl ResidentLedgerWriter {
             task: Arc::new(std::sync::Mutex::new(Some(task))),
             authority_order: Arc::new(MotherAuthorityOrderV1::unavailable()),
             cached_tip: Arc::new(std::sync::Mutex::new(CachedLedgerTip::default())),
+            governed: false,
         }
     }
 
@@ -515,6 +527,7 @@ impl ResidentLedgerWriter {
             task: Arc::new(std::sync::Mutex::new(None)),
             authority_order: Arc::new(MotherAuthorityOrderV1::unavailable()),
             cached_tip: Arc::new(std::sync::Mutex::new(CachedLedgerTip::default())),
+            governed: false,
         }
     }
 
@@ -555,6 +568,10 @@ impl ResidentLedgerWriter {
     }
 
     fn spawn_opened(path: PathBuf, mut ledger: JsonlObservationLedger) -> Result<Self> {
+        // Unknown is governed: Unix-socket mutations fail closed.
+        let governed = ledger
+            .verified_replay()
+            .map_or(true, |replay| replay.state.passkey_admin.is_some());
         let mut dispatch_index = CallDispatchIndexV1::default();
         for entry in ledger.iter_entries() {
             dispatch_index
@@ -724,6 +741,7 @@ impl ResidentLedgerWriter {
             task: Arc::new(std::sync::Mutex::new(Some(task))),
             authority_order,
             cached_tip,
+            governed,
         })
     }
 
@@ -745,6 +763,10 @@ impl ResidentLedgerWriter {
             generation: authority.generation,
             source_authority_observation_id: authority.source_authority_observation_id,
         })
+    }
+
+    pub(crate) fn is_governed(&self) -> bool {
+        self.governed
     }
 
     pub(crate) fn is_fenced(&self) -> bool {

@@ -66,8 +66,9 @@ pub use authority_order::{
 };
 pub use authority_snapshot::{
     LocalExecutionAuthoritySnapshotDenyV1, ProvenAuthorityProjectionV1,
-    authority_projection_expectation_from_verified, local_execution_authority_snapshot,
-    local_execution_authority_snapshot_at, local_execution_authority_snapshot_from_proven,
+    authority_projection_expectation_from_verified, governed_proven_projection,
+    local_execution_authority_snapshot, local_execution_authority_snapshot_at,
+    local_execution_authority_snapshot_from_proven,
     local_execution_authority_snapshot_from_verified, prove_authority_projection,
 };
 pub use blob_store::{

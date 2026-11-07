@@ -231,6 +231,39 @@ pub(super) fn replay_fact(
     Ok(())
 }
 
+/// True when the ledger at `path` was born passkey-rooted (D-58). Replay requires
+/// passkey genesis to be the first physical frame, so the first line decides.
+pub fn ledger_is_passkey_governed(path: &Path) -> Result<bool> {
+    use std::io::BufRead as _;
+    let file = match std::fs::File::open(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        file => file.map_err(|source| ObservationLedgerError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?,
+    };
+    let mut first = String::new();
+    std::io::BufReader::new(file)
+        .read_line(&mut first)
+        .map_err(|source| ObservationLedgerError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    if first.trim().is_empty() {
+        return Ok(false);
+    }
+    let entry: MctObservationLedgerEntry =
+        serde_json::from_str(first.trim()).map_err(|_| denied("unreadable first ledger frame"))?;
+    Ok(entry
+        .observation
+        .detail_ref
+        .as_deref()
+        .is_some_and(|detail| {
+            detail.starts_with(AUTHORITY_FACT_DETAIL_PREFIX)
+                && detail.contains("\"fact_kind\":\"passkey_admin\"")
+        }))
+}
+
 impl JsonlObservationLedger {
     /// Rejects invalid genesis before creating storage. Existing files are never
     /// reopened here; I/O failures after admission retain the normal recovery gate.
