@@ -5,8 +5,16 @@
 
 #![forbid(unsafe_code)]
 
+mod governed_runtime;
+pub use governed_runtime::{
+    GOVERNED_DIRECTORY_READ_ACTION, GOVERNED_DIRECTORY_READ_TOY_ID, GOVERNED_ROUTES,
+    GovernedChildStateV1, GovernedChildV1, GovernedPeerV1, GovernedRuntimeV1,
+    directory_read_contract, governed_route_scope,
+};
 mod passkey_admin;
-pub use passkey_admin::{PasskeyAdminCanonicalV1, PasskeyAdminFactV1, PasskeyGenesisSetupV1};
+pub use passkey_admin::{
+    PasskeyAdminCanonicalV1, PasskeyAdminFactV1, PasskeyGenesisSetupV1, ledger_is_passkey_governed,
+};
 mod admin_genesis;
 #[cfg(test)]
 mod passkey_admin_tests;

@@ -645,3 +645,323 @@ fn passkey_profile_rejects_ordinary_and_hybrid_mutation_bypasses() {
     obs.detail_ref = Some(encode_authority_fact("passkey_admin", "forged", &fact).unwrap());
     assert!(w.append_before_effect(obs, time(0).to_string()).is_err());
 }
+
+fn governed(
+    w: &mut JsonlObservationLedger,
+    signer: &str,
+    route: &str,
+    scope: AdminKeyScopeV1,
+    body: serde_json::Value,
+    nonce: u64,
+) -> Result<()> {
+    let action = PasskeyAdminActionV1::Command {
+        scope,
+        route: route.into(),
+        body: body.to_string(),
+    };
+    let r = ed_signed(intent(w, action, nonce), signer);
+    w.execute_passkey_command_with_clock(r, route, scope, || time(10), |_| Ok(()))
+}
+fn approve_body() -> serde_json::Value {
+    serde_json::json!({
+        "child_name": "repo-report",
+        "artifact_id": format!("sha256:{}", "a".repeat(64)),
+        "artifact_version": "0.1.0",
+        "manifest_hash": format!("sha256:{}", "b".repeat(64)),
+        "vision_id": "vision-a",
+        "policy_revision": 1
+    })
+}
+fn grant_body(grant_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "grant_id": grant_id,
+        "child_name": "repo-report",
+        "canonical_root": "file:///srv/data",
+        "expires_at": time(3600)
+    })
+}
+fn governed_writer(path: &Path) -> JsonlObservationLedger {
+    let mut w = writer(path);
+    let scopes = vec![
+        AdminKeyScopeV1::ApproveChild,
+        AdminKeyScopeV1::PeerAdd,
+        AdminKeyScopeV1::PeerRevoke,
+        AdminKeyScopeV1::RevokeChild,
+        AdminKeyScopeV1::WatchGrant,
+        AdminKeyScopeV1::WatchRevoke,
+    ];
+    let r = root_signed(intent(&w, issue_action("ops", scopes, 86400), 1));
+    w.execute_passkey_admin_at(r, time(0)).unwrap();
+    w
+}
+fn runtime(w: &JsonlObservationLedger) -> crate::GovernedRuntimeV1 {
+    w.cached_replay()
+        .unwrap()
+        .state
+        .passkey_admin
+        .as_ref()
+        .unwrap()
+        .runtime
+        .clone()
+}
+
+#[test]
+fn governed_commands_write_approval_and_grant_that_name_the_day_key() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("ledger");
+    let mut w = governed_writer(&path);
+    governed(
+        &mut w,
+        "ops",
+        "/children/approve",
+        AdminKeyScopeV1::ApproveChild,
+        approve_body(),
+        2,
+    )
+    .unwrap();
+    governed(
+        &mut w,
+        "ops",
+        "/toys/grant-directory-read",
+        AdminKeyScopeV1::WatchGrant,
+        grant_body("g1"),
+        3,
+    )
+    .unwrap();
+    let state = w
+        .cached_replay()
+        .unwrap()
+        .state
+        .passkey_admin
+        .clone()
+        .unwrap();
+    assert!(
+        state.state.day_keys.contains_key("ops"),
+        "day key was issued by the root"
+    );
+    let child = &state.runtime.children["repo-report"];
+    assert_eq!(child.state, crate::GovernedChildStateV1::Approved);
+    assert_eq!(child.decided_by, "ed25519:ops");
+    let grant = &state.runtime.toy_grants["g1"];
+    assert_eq!(grant.issuer_id, "ed25519:ops");
+    assert_eq!(grant.constraints.expires_at, Some(time(3600)));
+    assert_eq!(grant.scope.resource_id.as_deref(), Some("file:///srv/data"));
+    assert_eq!(grant.subject.artifact_id, child.artifact_id);
+    drop(w);
+    clear_ledger_replay_cache(&path, "ledger-a", "mother-a");
+    let reopened = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
+    assert_eq!(
+        runtime(&reopened),
+        state.runtime,
+        "replay rebuilds the same authority"
+    );
+}
+
+#[test]
+fn governed_commands_refuse_bad_changes_before_any_append() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("ledger");
+    let mut w = governed_writer(&path);
+    let unchanged = |w: &mut JsonlObservationLedger, result: Result<()>, why: &str| {
+        let before = std::fs::read(&path).unwrap();
+        assert!(result.is_err(), "{why} was admitted");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before,
+            "{why} changed the ledger"
+        );
+        let _ = w;
+    };
+    let before = std::fs::read(&path).unwrap();
+    let r = governed(
+        &mut w,
+        "ops",
+        "/toys/grant-directory-read",
+        AdminKeyScopeV1::WatchGrant,
+        grant_body("g0"),
+        2,
+    );
+    assert!(r.is_err(), "grant for an unapproved child");
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    governed(
+        &mut w,
+        "ops",
+        "/children/approve",
+        AdminKeyScopeV1::ApproveChild,
+        approve_body(),
+        3,
+    )
+    .unwrap();
+    let mut open_ended = grant_body("g1");
+    open_ended.as_object_mut().unwrap().remove("expires_at");
+    let r = governed(
+        &mut w,
+        "ops",
+        "/toys/grant-directory-read",
+        AdminKeyScopeV1::WatchGrant,
+        open_ended,
+        4,
+    );
+    assert!(
+        r.as_ref()
+            .unwrap_err()
+            .to_string()
+            .contains("MissingExpiry")
+    );
+    unchanged(&mut w, r, "open-ended grant");
+    let mut unbounded = grant_body("g1");
+    unbounded["canonical_root"] = "file:///srv/../etc".into();
+    let r = governed(
+        &mut w,
+        "ops",
+        "/toys/grant-directory-read",
+        AdminKeyScopeV1::WatchGrant,
+        unbounded,
+        5,
+    );
+    unchanged(&mut w, r, "escaping root");
+    let r = governed(
+        &mut w,
+        "ops",
+        "/children/approve",
+        AdminKeyScopeV1::WatchGrant,
+        approve_body(),
+        6,
+    );
+    unchanged(&mut w, r, "route under another scope");
+    let mut unpinned = approve_body();
+    unpinned["artifact_id"] = "latest".into();
+    let r = governed(
+        &mut w,
+        "ops",
+        "/children/approve",
+        AdminKeyScopeV1::ApproveChild,
+        unpinned,
+        7,
+    );
+    unchanged(&mut w, r, "unpinned artifact");
+    governed(
+        &mut w,
+        "ops",
+        "/toys/grant-directory-read",
+        AdminKeyScopeV1::WatchGrant,
+        grant_body("g1"),
+        8,
+    )
+    .unwrap();
+    let r = governed(
+        &mut w,
+        "ops",
+        "/toys/grant-directory-read",
+        AdminKeyScopeV1::WatchGrant,
+        grant_body("g1"),
+        9,
+    );
+    unchanged(&mut w, r, "reused grant id");
+}
+
+#[test]
+fn governed_revocations_survive_replay() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("ledger");
+    let mut w = governed_writer(&path);
+    governed(
+        &mut w,
+        "ops",
+        "/children/approve",
+        AdminKeyScopeV1::ApproveChild,
+        approve_body(),
+        2,
+    )
+    .unwrap();
+    governed(
+        &mut w,
+        "ops",
+        "/toys/grant-directory-read",
+        AdminKeyScopeV1::WatchGrant,
+        grant_body("g1"),
+        3,
+    )
+    .unwrap();
+    governed(
+        &mut w,
+        "ops",
+        "/toys/revoke",
+        AdminKeyScopeV1::WatchRevoke,
+        serde_json::json!({"grant_id": "g1"}),
+        4,
+    )
+    .unwrap();
+    governed(
+        &mut w,
+        "ops",
+        "/children/revoke",
+        AdminKeyScopeV1::RevokeChild,
+        serde_json::json!({"child_name": "repo-report"}),
+        5,
+    )
+    .unwrap();
+    drop(w);
+    clear_ledger_replay_cache(&path, "ledger-a", "mother-a");
+    let reopened = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
+    let runtime = runtime(&reopened);
+    assert_eq!(runtime.toy_grants["g1"].grant_state, ToyGrantState::Revoked);
+    assert_eq!(
+        runtime.children["repo-report"].state,
+        crate::GovernedChildStateV1::Revoked
+    );
+}
+
+#[test]
+fn governed_peers_need_expiry_and_revoke_through_replay() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("ledger");
+    let mut w = governed_writer(&path);
+    let peer = serde_json::json!({
+        "peer_node_id": "mother-b",
+        "binding_id": "binding-b",
+        "endpoint_id": "endpoint-b",
+        "vision_id": "vision-a",
+        "policy_revision": 1,
+        "expires_at": time(3600)
+    });
+    let mut open_ended = peer.clone();
+    open_ended.as_object_mut().unwrap().remove("expires_at");
+    let before = std::fs::read(&path).unwrap();
+    let refused = governed(
+        &mut w,
+        "ops",
+        "/peers/add",
+        AdminKeyScopeV1::PeerAdd,
+        open_ended,
+        2,
+    );
+    assert!(refused.unwrap_err().to_string().contains("MissingExpiry"));
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    governed(
+        &mut w,
+        "ops",
+        "/peers/add",
+        AdminKeyScopeV1::PeerAdd,
+        peer,
+        3,
+    )
+    .unwrap();
+    assert_eq!(runtime(&w).peers["mother-b"].decided_by, "ed25519:ops");
+    governed(
+        &mut w,
+        "ops",
+        "/peers/revoke",
+        AdminKeyScopeV1::PeerRevoke,
+        serde_json::json!({"peer_node_id": "mother-b"}),
+        4,
+    )
+    .unwrap();
+    drop(w);
+    clear_ledger_replay_cache(&path, "ledger-a", "mother-a");
+    let reopened = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
+    assert_eq!(
+        runtime(&reopened).peers["mother-b"].state,
+        crate::GovernedChildStateV1::Revoked
+    );
+}

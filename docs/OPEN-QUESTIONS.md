@@ -8,6 +8,8 @@ Baseline: `main` at `4330876`; review-branch dispositions are explicitly labelle
 
 ## 1. Child-start ledger fact (double-run on power loss)
 
+**Settled by D-60 (NIC-126):** unkeyed calls are now fenced under their call ID. The text below is the history of the question.
+
 **The bug.** A local Child call writes no ledger fact between route
 revalidation and the Child returning. Restart recovery finds in-flight work in
 SQLite, which runs WAL with `synchronous = NORMAL`. That survives a process kill
