@@ -5,9 +5,9 @@
     {
       "check": "C1",
       "step": "pi-installed-governed-mother",
-      "reason": "governed-resident-boot-not-wired",
-      "owner": "NIC-126",
-      "note": "Declared: resident startup finalize and serve still require the SQLite projection on a passkey ledger, so no governed Mother boots yet."
+      "reason": "probe-not-implemented",
+      "owner": "NIC-129",
+      "note": "Governed resident boot is proven on macOS (governed_boot.rs); an installed, boot-started Pi 3B Mother is not."
     },
     {
       "check": "C1",
@@ -84,15 +84,8 @@
     },
     {
       "check": "C6",
-      "step": "signed-peer-admission",
-      "reason": "governed-peer-commands-not-migrated",
-      "owner": "NIC-126",
-      "note": "Declared: /peers/add and /peers/revoke are not governed commands yet; a governed Mother has no peers."
-    },
-    {
-      "check": "C6",
       "step": "two-mother-governed-pi-run",
-      "reason": "blocked:signed-peer-admission",
+      "reason": "probe-not-implemented",
       "owner": "NIC-129"
     },
     {

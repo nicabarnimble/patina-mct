@@ -18,7 +18,7 @@ const declared = reason => ({ kind: 'declared', reason });
 
 export const PROBES = {
   'governed-runtime-startup': cargo('mct-daemon', ['--test', 'passkey_admin'], 'done_governed_runtime_admits_passkey_ledger', 1),
-  'pi-installed-governed-mother': declared('governed-resident-boot-not-wired'),
+  'pi-installed-governed-mother': declared('probe-not-implemented'),
   'pi-call-within-budget': declared('probe-not-implemented'),
   'nic63-repo-report-on-pi': evidence('repoReportOnPi'),
   'toy-grant-expiry-mandatory': cargo('mct-kernel', ['--lib'], 'toy::tests::done_c2_toy_grant_without_expiry_is_denied', 1),
@@ -41,7 +41,7 @@ export const PROBES = {
   'revocation-survives-sigkill-restart': declared('probe-not-implemented'),
   'toy-grant-revocation-unit': cargo('mct-kernel', ['--lib'], 'toy::tests::revoked', 1),
   'peer-revocation-on-fleet': evidence('peerRevocationOnFleet'),
-  'signed-peer-admission': declared('governed-peer-commands-not-migrated'),
+  'signed-peer-admission': cargo('mct-daemon', ['--test', 'governed_boot'], 'done_c2_governed_mother_boots_runs_signed_child_and_refuses_unix_socket_mutation', 1),
   'two-mother-governed-pi-run': declared('probe-not-implemented'),
   'nic63-two-mother-mesh-job': evidence('twoMotherMeshJob'),
   'survivors-serve-during-peer-loss': evidence('survivorsServe'),
