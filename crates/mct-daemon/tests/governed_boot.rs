@@ -336,6 +336,46 @@ fn done_c2_governed_mother_boots_runs_signed_child_and_refuses_unix_socket_mutat
     let completed = call(&socket, &authority, "governed-call-1");
     assert_eq!(completed["outcome"], "completed", "{completed:#}");
 
+    let ticket_line = std::fs::read_to_string(work.join("mother.log"))
+        .unwrap()
+        .lines()
+        .find_map(|line| line.strip_prefix("ticket=").map(str::to_owned))
+        .expect("resident prints its endpoint ticket");
+    let ticket = work.join("resident-ticket.json");
+    private_fs::write_atomic(&ticket, ticket_line.as_bytes()).unwrap();
+    let prepared = governed.prepare(
+        &json!({"action":"command","scope":"peer_revoke","route":"/peers/revoke",
+            "body": json!({"peer_node_id": "mother-b"}).to_string()}),
+        "ops",
+    );
+    let intent = governed.file(&prepared["intent"]);
+    let signed = ok(&[
+        "passkey-admin",
+        "sign-day",
+        "--intent",
+        &intent,
+        "--grant",
+        "ops",
+        "--secret",
+        work.join("ops-secret.json").to_str().unwrap(),
+    ]);
+    let signed = governed.file(&signed);
+    let reply = ok(&[
+        "passkey-admin",
+        "send-iroh",
+        "--ticket",
+        ticket.to_str().unwrap(),
+        "--request",
+        &signed,
+    ]);
+    assert!(reply.to_string().contains("completed"), "{reply:#}");
+    let config: Value =
+        serde_json::from_slice(&std::fs::read(root.join("config.json")).unwrap()).unwrap();
+    assert_eq!(
+        config["peers"]["mother-b"]["binding_state"], "revoked",
+        "{config:#}"
+    );
+
     let (status, refused) = uds(
         &socket,
         "POST",

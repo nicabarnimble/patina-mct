@@ -1244,6 +1244,9 @@ mod tests {
             )
             .unwrap();
         let mut governed = crate::passkey_fixture::GovernedLedger::create(&ledger_path);
+        MctDaemonConfigStore::new(&config_path)
+            .approve_and_assign_loaded_child(&child, MctOperatorChildScope::default())
+            .unwrap();
         let snapshot = || {
             mct_daemon::local_execution_authority_snapshot_at(
                 &ledger_path,
