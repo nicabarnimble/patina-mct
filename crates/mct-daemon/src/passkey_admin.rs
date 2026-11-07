@@ -25,6 +25,9 @@ pub fn execute_passkey_administration(
         PasskeyAdminActionV1::Command { route, body, .. } => {
             // Route policy is adapter-owned. Never use request.scope as the
             // required scope. Unknown/unmigrated routes cannot acquire authority.
+            if route == "/artifacts/stage" {
+                return governed_artifact_stage(ledger, request.clone(), body);
+            }
             if let Some(scope) = mct_observation::governed_route_scope(route) {
                 // The committed fact is the change; replay applies its body.
                 let route = route.clone();
@@ -57,4 +60,48 @@ pub fn execute_passkey_administration(
             )
         }
     }
+}
+
+/// Governed staging: a pinned, operator-pointed stage request is the signed
+/// command; its admission is committed before any file is written.
+fn governed_artifact_stage(
+    ledger: &mut JsonlObservationLedger,
+    request: PasskeyAdminRequestV1,
+    body: &str,
+) -> Result<Value> {
+    let stage: crate::acquisition::MctArtifactStageRequest = serde_json::from_str(body)
+        .map_err(|error| anyhow::anyhow!("malformed stage body: {error}"))?;
+    if stage.expected_digest.is_none()
+        || stage.expected_manifest_digest.is_none()
+        || stage.standing_source_authority_id.is_some()
+    {
+        bail!("governed staging must be operator-pointed and pinned to both digests");
+    }
+    ledger.execute_passkey_command(
+        request,
+        "/artifacts/stage",
+        AdminKeyScopeV1::Artifact,
+        |_| Ok(()),
+    )?;
+    let context = crate::acquisition::new_artifact_attempt_context()?;
+    let report = crate::acquisition::stage_artifact_with_context_and_observer(
+        &stage,
+        &context,
+        None,
+        |report| {
+            let now = crate::current_timestamp();
+            ledger.append_before_effect(
+                mct_kernel::MctObservation::informational(
+                    context.acquisition_observation_id.clone(),
+                    now.clone(),
+                    mct_kernel::ObservationKind::ArtifactVerified,
+                    mct_kernel::TraceId::new(format!("trace:{}", context.acquisition_id))?,
+                    format!("governed artifact staged digest={:?}", report.artifact_id),
+                ),
+                now.to_string(),
+            )?;
+            Ok(())
+        },
+    )?;
+    Ok(serde_json::to_value(&report)?)
 }

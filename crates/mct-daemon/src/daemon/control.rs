@@ -4261,6 +4261,8 @@ mod tests {
             ("/watch/supporting-grant", serde_json::json!({})),
             ("/peers/add", serde_json::json!({})),
             ("/authority/import-toy-state", serde_json::json!({})),
+            ("/artifacts/stage", serde_json::json!({})),
+            ("/peers/revoke", serde_json::json!({})),
         ] {
             let (status, response) = post_mutation(
                 Arc::clone(&listener),

@@ -132,10 +132,15 @@ impl GovernedLedger {
                 day_key().verifying_key().as_bytes(),
             )
             .unwrap(),
-            scopes: mct_observation::GOVERNED_ROUTES
-                .iter()
-                .map(|(_, scope)| *scope)
-                .collect(),
+            scopes: {
+                let mut scopes: Vec<_> = mct_observation::GOVERNED_ROUTES
+                    .iter()
+                    .map(|(_, scope)| *scope)
+                    .chain([AdminKeyScopeV1::Artifact])
+                    .collect();
+                scopes.sort();
+                scopes
+            },
             expires_at: stamp(3_600),
         });
         governed.apply(request).unwrap();

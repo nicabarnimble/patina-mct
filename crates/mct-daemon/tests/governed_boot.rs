@@ -148,28 +148,18 @@ impl Governed {
     }
 }
 
-fn write_child(children: &Path) -> (String, String) {
-    let dir = children.join("resident-echo");
-    std::fs::create_dir_all(&dir).unwrap();
+fn write_child_source(dir: &Path) -> (String, String) {
+    std::fs::create_dir_all(dir).unwrap();
     let wasm = std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/mct-test-echo-0.1.0/mct-test-echo.wasm"
     ))
     .unwrap();
     let manifest = "[child]\nname = \"resident-echo\"\nversion = \"0.1.0\"\nkind = \"child\"\nrole = \"test\"\n\n[child.ingress]\nmode = \"wit-only\"\n\n[child.artifact]\nwasm = \"resident-echo.wasm\"\n\n[child.contract]\ndefault = \"patina:demo/control@0.1.0.run\"\nallow = [\"patina:demo/control@0.1.0.run\"]\n\n[needs]\ntoys = []\n";
-    for (name, bytes) in [
-        ("resident-echo.wasm", wasm.as_slice()),
-        ("child.toml", manifest.as_bytes()),
-    ] {
-        std::fs::write(dir.join(name), bytes).unwrap();
-        std::fs::write(
-            dir.join(format!("{name}.sha256")),
-            format!("{:x}", Sha256::digest(bytes)),
-        )
-        .unwrap();
-    }
+    std::fs::write(dir.join("resident-echo.wasm"), &wasm).unwrap();
+    std::fs::write(dir.join("child.toml"), manifest).unwrap();
     (
-        format!("sha256:{:x}", Sha256::digest(&wasm)),
+        blake3::hash(&wasm).to_hex().to_string(),
         format!("sha256:{:x}", Sha256::digest(manifest.as_bytes())),
     )
 }
@@ -247,13 +237,40 @@ fn done_c2_governed_mother_boots_runs_signed_child_and_refuses_unix_socket_mutat
         secret.to_str().unwrap(),
     ]);
     let issue = json!({"action":"issue_day_key","grant_id":"ops","public_half":public_half,
-        "scopes":["approve_child","revoke_child","watch_grant","watch_revoke"],
+        "scopes":["approve_child","artifact","peer_add","peer_revoke","revoke_child","watch_grant","watch_revoke"],
         "expires_at": plus_secs(3600)});
     let prepared = governed.prepare(&issue, "root");
     governed.apply(&sign_root(prepared));
 
     let children = root.join("children");
-    let (artifact_id, manifest_hash) = write_child(&children);
+    let source = work.join("source");
+    let (blake3_digest, manifest_hash) = write_child_source(&source);
+    let staged = governed.command("artifact", "/artifacts/stage", &json!({
+        "source_root": source, "manifest_path": "child.toml", "component_path": "resident-echo.wasm",
+        "claimed_child_name": "resident-echo", "claimed_artifact_version": "0.1.0",
+        "expected_digest": format!("blake3:{blake3_digest}"), "expected_manifest_digest": manifest_hash,
+        "standing_source_authority_id": null, "claimed_publisher": null, "require_source_sidecars": false,
+        "children_dir": children, "state_path": root.join("state.sqlite")
+    }));
+    assert_eq!(staged["verification_outcome"], "verified", "{staged:#}");
+    let artifact_id = staged["artifact_id"].as_str().unwrap().to_owned();
+    // Approval pins the installed manifest, which staging canonicalizes.
+    let installed = children
+        .join("artifacts/sha256")
+        .join(artifact_id.trim_start_matches("sha256:"))
+        .join("child.toml");
+    let manifest_hash = format!(
+        "sha256:{:x}",
+        Sha256::digest(std::fs::read(installed).unwrap())
+    );
+    governed.command(
+        "peer_add",
+        "/peers/add",
+        &json!({
+            "peer_node_id": "mother-b", "binding_id": "binding-b", "endpoint_id": "endpoint-b",
+            "vision_id": "vision-local", "policy_revision": 1, "expires_at": plus_secs(3600)
+        }),
+    );
     let approved = governed.command(
         "approve_child",
         "/children/approve",
@@ -300,6 +317,20 @@ fn done_c2_governed_mother_boots_runs_signed_child_and_refuses_unix_socket_mutat
         );
         std::thread::sleep(Duration::from_millis(50));
     }
+
+    let config: Value =
+        serde_json::from_slice(&std::fs::read(root.join("config.json")).unwrap()).unwrap();
+    let peers = config["peers"].as_object().unwrap();
+    assert_eq!(peers.len(), 1, "{config:#}");
+    assert_eq!(peers["mother-b"]["binding_state"], "admitted");
+    assert!(
+        peers["mother-b"]["binding_signature_ref"].is_string(),
+        "{config:#}"
+    );
+    assert_eq!(
+        config["child_approvals"]["resident-echo"]["artifact_id"],
+        artifact_id
+    );
 
     let (_, authority) = uds(&socket, "GET", "/receiver-authority", None);
     let completed = call(&socket, &authority, "governed-call-1");

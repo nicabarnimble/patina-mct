@@ -8,9 +8,9 @@ use std::collections::BTreeMap;
 use mct_kernel::admin_key::PasskeyAdminActionV1;
 use mct_kernel::admin_sig::PasskeyAdminRequestV1;
 use mct_kernel::{
-    AdminKeyScopeV1, CanonicalToyContract, ChildAssignmentId, MctNodeId, ObservationId, Timestamp,
-    ToyContractIdentity, ToyGrant, ToyGrantConstraints, ToyGrantId, ToyGrantScope, ToyGrantState,
-    ToyGrantSubject, ToyId, VisionId,
+    AdminKeyScopeV1, CanonicalToyContract, ChildAssignmentId, EndpointIdText, MctNodeId,
+    ObservationId, PeerBindingId, Timestamp, ToyContractIdentity, ToyGrant, ToyGrantConstraints,
+    ToyGrantId, ToyGrantScope, ToyGrantState, ToyGrantSubject, ToyId, VisionId,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -18,11 +18,13 @@ pub const GOVERNED_DIRECTORY_READ_TOY_ID: &str = "toy:mct:directory-read";
 pub const GOVERNED_DIRECTORY_READ_ACTION: &str = "read-content";
 
 /// The only routes the governed profile admits, each bound to its scope.
-pub const GOVERNED_ROUTES: [(&str, AdminKeyScopeV1); 4] = [
+pub const GOVERNED_ROUTES: [(&str, AdminKeyScopeV1); 6] = [
     ("/children/approve", AdminKeyScopeV1::ApproveChild),
     ("/children/revoke", AdminKeyScopeV1::RevokeChild),
     ("/toys/grant-directory-read", AdminKeyScopeV1::WatchGrant),
     ("/toys/revoke", AdminKeyScopeV1::WatchRevoke),
+    ("/peers/add", AdminKeyScopeV1::PeerAdd),
+    ("/peers/revoke", AdminKeyScopeV1::PeerRevoke),
 ];
 
 pub fn governed_route_scope(route: &str) -> Option<AdminKeyScopeV1> {
@@ -39,12 +41,52 @@ pub struct GovernedRuntimeV1 {
     pub children: BTreeMap<String, GovernedChildV1>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub toy_grants: BTreeMap<String, ToyGrant>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub peers: BTreeMap<String, GovernedPeerV1>,
 }
 
 impl GovernedRuntimeV1 {
     pub fn is_empty(&self) -> bool {
-        self.children.is_empty() && self.toy_grants.is_empty()
+        self.children.is_empty() && self.toy_grants.is_empty() && self.peers.is_empty()
     }
+}
+
+/// One signed peer binding. The Mother's own binding signature and the dial
+/// ticket are host data; the ledger decides who is a peer, until when.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GovernedPeerV1 {
+    pub peer_node_id: MctNodeId,
+    pub binding_id: PeerBindingId,
+    pub endpoint_id: EndpointIdText,
+    pub vision_id: VisionId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket: Option<serde_json::Value>,
+    pub policy_revision: u64,
+    pub expires_at: Timestamp,
+    pub state: GovernedChildStateV1,
+    pub decided_by: String,
+    pub decided_at: Timestamp,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PeerAddBodyV1 {
+    peer_node_id: MctNodeId,
+    binding_id: PeerBindingId,
+    endpoint_id: EndpointIdText,
+    vision_id: VisionId,
+    #[serde(default)]
+    ticket: Option<serde_json::Value>,
+    policy_revision: u64,
+    #[serde(default)]
+    expires_at: Option<Timestamp>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PeerNodeBodyV1 {
+    peer_node_id: MctNodeId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -273,6 +315,41 @@ pub(crate) fn apply_governed_command(
                 .filter(|grant| grant.grant_state == ToyGrantState::Active)
                 .ok_or("no active grant to revoke")?;
             grant.grant_state = ToyGrantState::Revoked;
+        }
+        "/peers/add" => {
+            let b: PeerAddBodyV1 = body(raw)?;
+            let expires_at = b
+                .expires_at
+                .ok_or("MissingExpiry: peer binding expiry is mandatory")?;
+            if &expires_at <= decided_at || b.policy_revision == 0 {
+                return Err("peer binding needs a future expiry and a policy revision".into());
+            }
+            next.peers.insert(
+                b.peer_node_id.to_string(),
+                GovernedPeerV1 {
+                    peer_node_id: b.peer_node_id,
+                    binding_id: b.binding_id,
+                    endpoint_id: b.endpoint_id,
+                    vision_id: b.vision_id,
+                    ticket: b.ticket,
+                    policy_revision: b.policy_revision,
+                    expires_at,
+                    state: GovernedChildStateV1::Approved,
+                    decided_by,
+                    decided_at: decided_at.clone(),
+                },
+            );
+        }
+        "/peers/revoke" => {
+            let b: PeerNodeBodyV1 = body(raw)?;
+            let peer = next
+                .peers
+                .get_mut(b.peer_node_id.as_str())
+                .filter(|peer| peer.state == GovernedChildStateV1::Approved)
+                .ok_or("no admitted peer to revoke")?;
+            peer.state = GovernedChildStateV1::Revoked;
+            peer.decided_by = decided_by;
+            peer.decided_at = decided_at.clone();
         }
         _ => return Err("unknown governed route".into()),
     }

@@ -684,6 +684,8 @@ fn governed_writer(path: &Path) -> JsonlObservationLedger {
     let mut w = writer(path);
     let scopes = vec![
         AdminKeyScopeV1::ApproveChild,
+        AdminKeyScopeV1::PeerAdd,
+        AdminKeyScopeV1::PeerRevoke,
         AdminKeyScopeV1::RevokeChild,
         AdminKeyScopeV1::WatchGrant,
         AdminKeyScopeV1::WatchRevoke,
@@ -906,6 +908,60 @@ fn governed_revocations_survive_replay() {
     assert_eq!(runtime.toy_grants["g1"].grant_state, ToyGrantState::Revoked);
     assert_eq!(
         runtime.children["repo-report"].state,
+        crate::GovernedChildStateV1::Revoked
+    );
+}
+
+#[test]
+fn governed_peers_need_expiry_and_revoke_through_replay() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("ledger");
+    let mut w = governed_writer(&path);
+    let peer = serde_json::json!({
+        "peer_node_id": "mother-b",
+        "binding_id": "binding-b",
+        "endpoint_id": "endpoint-b",
+        "vision_id": "vision-a",
+        "policy_revision": 1,
+        "expires_at": time(3600)
+    });
+    let mut open_ended = peer.clone();
+    open_ended.as_object_mut().unwrap().remove("expires_at");
+    let before = std::fs::read(&path).unwrap();
+    let refused = governed(
+        &mut w,
+        "ops",
+        "/peers/add",
+        AdminKeyScopeV1::PeerAdd,
+        open_ended,
+        2,
+    );
+    assert!(refused.unwrap_err().to_string().contains("MissingExpiry"));
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    governed(
+        &mut w,
+        "ops",
+        "/peers/add",
+        AdminKeyScopeV1::PeerAdd,
+        peer,
+        3,
+    )
+    .unwrap();
+    assert_eq!(runtime(&w).peers["mother-b"].decided_by, "ed25519:ops");
+    governed(
+        &mut w,
+        "ops",
+        "/peers/revoke",
+        AdminKeyScopeV1::PeerRevoke,
+        serde_json::json!({"peer_node_id": "mother-b"}),
+        4,
+    )
+    .unwrap();
+    drop(w);
+    clear_ledger_replay_cache(&path, "ledger-a", "mother-a");
+    let reopened = JsonlObservationLedger::open(&path, "ledger-a", "mother-a").unwrap();
+    assert_eq!(
+        runtime(&reopened).peers["mother-b"].state,
         crate::GovernedChildStateV1::Revoked
     );
 }

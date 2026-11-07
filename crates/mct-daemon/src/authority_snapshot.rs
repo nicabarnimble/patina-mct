@@ -169,19 +169,21 @@ pub fn governed_proven_projection(
     })
 }
 
-/// Governed approvals and assignments replace whatever `config.json` holds; a
-/// governed Mother has no unsigned peers.
-fn apply_governed_runtime(config: &mut crate::MctDaemonConfig, runtime: &GovernedRuntimeV1) {
-    config.peers.clear();
-    config.child_approvals.clear();
-    config.child_assignments.clear();
+type GovernedChildRecords = (
+    std::collections::BTreeMap<String, crate::MctStoredChildApproval>,
+    std::collections::BTreeMap<String, crate::MctStoredChildAssignment>,
+);
+
+fn governed_child_records(runtime: &GovernedRuntimeV1) -> GovernedChildRecords {
+    let mut approvals = std::collections::BTreeMap::new();
+    let mut assignments = std::collections::BTreeMap::new();
     for child in runtime.children.values() {
         let Ok(artifact_id) = mct_kernel::ComponentArtifactId::new(child.artifact_id.clone())
         else {
             continue;
         };
         let active = child.state == GovernedChildStateV1::Approved;
-        config.child_approvals.insert(
+        approvals.insert(
             child.child_name.clone(),
             crate::MctStoredChildApproval {
                 manifest_hash: Some(child.manifest_hash.clone()),
@@ -200,7 +202,7 @@ fn apply_governed_runtime(config: &mut crate::MctDaemonConfig, runtime: &Governe
                 updated_at: child.decided_at.to_string(),
             },
         );
-        config.child_assignments.insert(
+        assignments.insert(
             child.child_name.clone(),
             crate::MctStoredChildAssignment {
                 child_name: child.child_name.clone(),
@@ -219,6 +221,77 @@ fn apply_governed_runtime(config: &mut crate::MctDaemonConfig, runtime: &Governe
             },
         );
     }
+    (approvals, assignments)
+}
+
+fn governed_binding_state(peer: &mct_observation::GovernedPeerV1) -> mct_kernel::BindingState {
+    if peer.state == GovernedChildStateV1::Approved {
+        mct_kernel::BindingState::Admitted
+    } else {
+        mct_kernel::BindingState::Revoked
+    }
+}
+
+/// The ledger decides who is a peer. A `config.json` entry survives only as the
+/// host-side signature and ticket for a peer the ledger names identically.
+fn governed_peer_matches(
+    entry: &crate::MctPeerAddressBookEntry,
+    peer: &mct_observation::GovernedPeerV1,
+) -> bool {
+    entry.peer_node_id == peer.peer_node_id
+        && entry.binding_id == peer.binding_id
+        && entry.endpoint_id == peer.endpoint_id
+        && entry.vision_id == peer.vision_id
+        && entry.policy_revision == peer.policy_revision
+        && entry.expires_at == peer.expires_at
+        && entry.binding_state == governed_binding_state(peer)
+}
+
+fn apply_governed_runtime(config: &mut crate::MctDaemonConfig, runtime: &GovernedRuntimeV1) {
+    let (approvals, assignments) = governed_child_records(runtime);
+    config.child_approvals = approvals;
+    config.child_assignments = assignments;
+    config.peers.retain(|node, entry| {
+        runtime
+            .peers
+            .get(node)
+            .is_some_and(|peer| governed_peer_matches(entry, peer))
+    });
+}
+
+/// Rewrites `config.json` approvals and peers from the governed ledger. Other
+/// resident readers use that file; the ledger stays the only authority.
+pub fn project_governed_config(
+    config_path: &Path,
+    runtime: &GovernedRuntimeV1,
+) -> anyhow::Result<()> {
+    let store = MctDaemonConfigStore::new(config_path);
+    let mut config = store.load()?;
+    let (approvals, assignments) = governed_child_records(runtime);
+    config.child_approvals = approvals;
+    config.child_assignments = assignments;
+    config.peers.clear();
+    store.save(&config)?;
+    for peer in runtime.peers.values() {
+        store.upsert_peer(crate::MctPeerAddressBookEntry {
+            peer_node_id: peer.peer_node_id.clone(),
+            binding_id: peer.binding_id.clone(),
+            endpoint_id: peer.endpoint_id.clone(),
+            vision_id: peer.vision_id.clone(),
+            ticket: peer
+                .ticket
+                .clone()
+                .map(serde_json::from_value)
+                .transpose()?,
+            binding_signature_ref: None,
+            outbound_binding: None,
+            binding_state: governed_binding_state(peer),
+            policy_revision: peer.policy_revision,
+            expires_at: peer.expires_at.clone(),
+            updated_at: peer.decided_at.to_string(),
+        })?;
+    }
+    Ok(())
 }
 
 /// Proves the stored projection usable for exactly `expectation`.
@@ -938,5 +1011,61 @@ mod tests {
         assert!(!kernel_source.contains(&caller_context));
         assert!(!kernel_source.contains(&caller_authority));
         assert!(!kernel_source.contains(&copying_conversion));
+    }
+}
+
+#[cfg(test)]
+mod governed_peer_tests {
+    use super::*;
+
+    #[test]
+    fn governed_snapshot_keeps_only_peers_the_ledger_names_identically() {
+        let ts = |value: &str| Timestamp::new(value).unwrap();
+        let peer = mct_observation::GovernedPeerV1 {
+            peer_node_id: mct_kernel::MctNodeId::new("mother-b").unwrap(),
+            binding_id: mct_kernel::PeerBindingId::new("binding-b").unwrap(),
+            endpoint_id: mct_kernel::EndpointIdText::new("endpoint-b").unwrap(),
+            vision_id: mct_kernel::VisionId::new("vision-local").unwrap(),
+            ticket: None,
+            policy_revision: 1,
+            expires_at: ts("2099-01-01T00:00:00Z"),
+            state: GovernedChildStateV1::Approved,
+            decided_by: "ed25519:ops".into(),
+            decided_at: ts("2026-11-07T00:00:00Z"),
+        };
+        let entry = |node: &str, expires: &str| crate::MctPeerAddressBookEntry {
+            peer_node_id: mct_kernel::MctNodeId::new(node).unwrap(),
+            binding_id: mct_kernel::PeerBindingId::new("binding-b").unwrap(),
+            endpoint_id: mct_kernel::EndpointIdText::new("endpoint-b").unwrap(),
+            vision_id: mct_kernel::VisionId::new("vision-local").unwrap(),
+            ticket: None,
+            binding_signature_ref: Some("sig".into()),
+            outbound_binding: None,
+            binding_state: mct_kernel::BindingState::Admitted,
+            policy_revision: 1,
+            expires_at: ts(expires),
+            updated_at: "2026-11-07T00:00:00Z".into(),
+        };
+        let mut runtime = GovernedRuntimeV1::default();
+        runtime.peers.insert("mother-b".into(), peer);
+        let mut config = crate::MctDaemonConfig::default();
+        config
+            .peers
+            .insert("mother-b".into(), entry("mother-b", "2099-01-01T00:00:00Z"));
+        config
+            .peers
+            .insert("mother-x".into(), entry("mother-x", "2099-01-01T00:00:00Z"));
+        apply_governed_runtime(&mut config, &runtime);
+        assert_eq!(config.peers.keys().collect::<Vec<_>>(), ["mother-b"]);
+
+        let mut stretched = crate::MctDaemonConfig::default();
+        stretched
+            .peers
+            .insert("mother-b".into(), entry("mother-b", "2100-01-01T00:00:00Z"));
+        apply_governed_runtime(&mut stretched, &runtime);
+        assert!(
+            stretched.peers.is_empty(),
+            "config cannot extend a signed peer's expiry"
+        );
     }
 }

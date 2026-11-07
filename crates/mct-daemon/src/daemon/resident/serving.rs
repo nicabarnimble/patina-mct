@@ -619,6 +619,11 @@ where
             .await;
         }
     }
+    if ledger.is_governed() {
+        project_governed_config_from(&ledger, &config.config_path, &config.state_path)
+            .await
+            .context("project governed approvals and peers")?;
+    }
     // Calls the previous writer tenure left unfinished are settled before any
     // endpoint, control surface, or trigger scheduler can accept new work.
     let prior_tenure_calls = settle_prior_tenure_calls(
@@ -813,6 +818,8 @@ where
                 })
         }
     });
+    let admin_config_path = config.config_path.clone();
+    let admin_state_path = config.state_path.clone();
     let observation_sink = resident_iroh_observation_sink(ledger.clone());
     let serve_result = {
         let serve_fut = endpoint.serve_concurrent_with_binding_provider(
@@ -826,9 +833,23 @@ where
                 receiver_authority_provider,
                 admin_handler: governed.then(|| {
                     let owner = ledger.clone();
+                    let config_path = admin_config_path.clone();
+                    let state_path = admin_state_path.clone();
                     mct_iroh::MctIrohAdminHandler::new(move |request| {
                         let owner = owner.clone();
-                        async move { owner.administer(request).await }
+                        let config_path = config_path.clone();
+                        let state_path = state_path.clone();
+                        async move {
+                            let reply = owner.administer(request).await;
+                            if matches!(reply, mct_iroh::MctIrohAdminReply::Completed { .. })
+                                && let Err(error) =
+                                    project_governed_config_from(&owner, &config_path, &state_path)
+                                        .await
+                            {
+                                eprintln!("governed config projection failed: {error:#}");
+                            }
+                            reply
+                        }
                     })
                 }),
                 ..MctIrohConcurrentServeConfig::new(observation_sink)
@@ -1141,6 +1162,26 @@ pub(super) fn resident_observations_for_served_protocol(
 ) -> Vec<MctObservation> {
     // Hello and call lifecycle facts are written by the awaited mandatory sink.
     Vec::new()
+}
+
+/// Writes governed approvals and peers into `config.json` for the resident
+/// readers that use it; execution re-checks every peer against the ledger.
+async fn project_governed_config_from(
+    ledger: &ResidentLedgerWriter,
+    config_path: &Path,
+    state_path: &Path,
+) -> Result<()> {
+    let projected = ledger
+        .projected_authority(state_path.to_path_buf())
+        .await
+        .map_err(|error| anyhow::anyhow!(error))?;
+    let runtime = projected
+        .replay
+        .state
+        .passkey_admin
+        .context("governed ledger lost its passkey state")?
+        .runtime;
+    mct_daemon::project_governed_config(config_path, &runtime)
 }
 
 #[cfg(test)]
