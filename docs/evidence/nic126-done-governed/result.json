@@ -3,7 +3,7 @@
   "frozen_source": "docs/design/mct-shape-review-opus.md",
   "frozen_sha256": "49f72e8398e5aee4fa36f921c6ff9e2d7f4dba93a1f6f7ffffd1aeb1af2425f5",
   "source": {
-    "head": "7720b053688c1e7deb81abaececf8de314730fed",
+    "head": "86b983c67ed2b0c15ed2f98f4e75c25daa732204",
     "dirty": false
   },
   "done": false,
@@ -23,7 +23,7 @@
       "verdict": "partly",
       "governed": {
         "status": "fail",
-        "reason": "governed-resident-boot-not-wired",
+        "reason": "probe-not-implemented",
         "step": "pi-installed-governed-mother"
       },
       "baseline": {
@@ -50,9 +50,9 @@
           "step": "pi-installed-governed-mother",
           "profile": "governed",
           "status": "fail",
-          "reason": "governed-resident-boot-not-wired",
+          "reason": "probe-not-implemented",
           "basis": "declared",
-          "owner": "NIC-126"
+          "owner": "NIC-129"
         },
         {
           "check": "C1",
@@ -410,8 +410,8 @@
       "verdict": "partly",
       "governed": {
         "status": "fail",
-        "reason": "governed-peer-commands-not-migrated",
-        "step": "signed-peer-admission"
+        "reason": "probe-not-implemented",
+        "step": "two-mother-governed-pi-run"
       },
       "baseline": {
         "status": "pass",
@@ -436,18 +436,23 @@
           "check": "C6",
           "step": "signed-peer-admission",
           "profile": "governed",
-          "status": "fail",
-          "reason": "governed-peer-commands-not-migrated",
-          "basis": "declared",
-          "owner": "NIC-126"
+          "status": "pass",
+          "reason": null,
+          "basis": "observed",
+          "detail": {
+            "command": "cargo test --locked -p mct-daemon --test governed_boot done_c2_governed_mother_boots_runs_signed_child_and_refuses_unix_socket_mutation -- --test-threads=1",
+            "passed": 1,
+            "failed": 0
+          },
+          "owner": null
         },
         {
           "check": "C6",
           "step": "two-mother-governed-pi-run",
           "profile": "governed",
-          "status": "blocked",
-          "reason": "blocked:signed-peer-admission",
-          "basis": "blocked",
+          "status": "fail",
+          "reason": "probe-not-implemented",
+          "basis": "declared",
           "owner": "NIC-129"
         },
         {
