@@ -47,3 +47,5 @@ Keep implementation essays out of the map. Name operator paths, flags, required 
 - [Release artifact](./release-artifact.md) covers rejection of a bad archive name and the manual Darwin verification.
 - [Linux admin Mother](./linux-admin-mother.md) covers the Nix install smoke and the Raspberry Pi records that an unattended run must not fake.
 - [Passkey browser ceremony](./passkey-browser.md) covers the default-browser 1Password taps that remain manual.
+- [Governed profile](./governed-profile.md) covers the passkey-governed Mother running Children (NIC-126) and what its tests do not prove.
+- [Governed profile](./governed-profile.md) covers the passkey-governed Mother running Children (NIC-126) and what its tests do not prove.
