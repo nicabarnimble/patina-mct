@@ -1,0 +1,8 @@
+target
+dist
+HELD-NOTE.md
+docs/evidence/nic126-verify-20261106-2007-live
+**/.DS_Store
+*.patch
+*.tar
+*.tar.gz
