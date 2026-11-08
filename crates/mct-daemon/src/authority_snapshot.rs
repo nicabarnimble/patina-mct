@@ -10,8 +10,10 @@ use mct_kernel::{
 };
 use mct_observation::{
     AuthorityProjectionCursorV1, AuthorityProjectionDenyReasonV1, AuthorityProjectionExpectationV1,
-    AuthorityProjectionLedgerEvidenceV1, ObservationLedgerError, UsableAuthorityProjectionProofV1,
-    authority_state_hash,
+    AuthorityProjectionHashInputV1, AuthorityProjectionLedgerEvidenceV1,
+    AuthorityProjectionStatusV1, GovernedChildStateV1, GovernedRuntimeV1, ObservationLedgerError,
+    UsableAuthorityProjectionProofV1, authority_projection_hash, authority_state_hash,
+    directory_read_contract,
 };
 use std::path::Path;
 
@@ -120,6 +122,178 @@ pub fn authority_projection_expectation_from_verified(
     })
 }
 
+/// On a passkey-rooted (governed) ledger the verified replay is the projection:
+/// there is no second store that could disagree with the ledger.
+pub fn governed_proven_projection(
+    head: &mct_observation::LedgerVerifiedHead,
+    replay: &mct_observation::AuthorityReplayV1,
+) -> Result<ProvenAuthorityProjectionV1, LocalExecutionAuthoritySnapshotDenyV1> {
+    let blocked = |_| LocalExecutionAuthoritySnapshotDenyV1::AuthorityReplayBlocked;
+    if replay.state.passkey_admin.is_none() {
+        return Err(LocalExecutionAuthoritySnapshotDenyV1::AuthorityReplayBlocked);
+    }
+    let expectation = authority_projection_expectation_from_verified(head, replay)?;
+    let projection_hash = authority_projection_hash(&AuthorityProjectionHashInputV1 {
+        source_mother_node_id: head.mother_node_id.clone(),
+        source_ledger_id: head.ledger_id.clone(),
+        through_sequence: head.local_sequence,
+        through_observation_id: head.observation_id.clone(),
+        through_entry_hash: head.entry_hash.clone(),
+        grants_authority: expectation.grants_authority.clone(),
+        authority_state_hash: expectation.authority_state_hash.clone(),
+        projection_status: AuthorityProjectionStatusV1::Current,
+    })
+    .map_err(blocked)?;
+    let cursor = AuthorityProjectionCursorV1 {
+        schema_version: 1,
+        projection_id: "authority-state-v1".into(),
+        projection_kind: "governed_ledger_replay".into(),
+        source_mother_node_id: head.mother_node_id.clone(),
+        source_ledger_id: head.ledger_id.clone(),
+        through_sequence: head.local_sequence,
+        through_observation_id: head.observation_id.clone(),
+        through_entry_hash: head.entry_hash.clone(),
+        grants_authority: expectation.grants_authority,
+        authority_state_hash: expectation.authority_state_hash,
+        projection_hash,
+        projection_status: AuthorityProjectionStatusV1::Current,
+        updated_at: crate::current_timestamp_string(),
+    };
+    Ok(ProvenAuthorityProjectionV1 {
+        projection: AuthorityProjectionSnapshotV1 {
+            cursor: cursor.clone(),
+            state: replay.state.clone(),
+            facts: replay.facts.clone(),
+        },
+        cursor,
+    })
+}
+
+type GovernedChildRecords = (
+    std::collections::BTreeMap<String, crate::MctStoredChildApproval>,
+    std::collections::BTreeMap<String, crate::MctStoredChildAssignment>,
+);
+
+fn governed_child_records(runtime: &GovernedRuntimeV1) -> GovernedChildRecords {
+    let mut approvals = std::collections::BTreeMap::new();
+    let mut assignments = std::collections::BTreeMap::new();
+    for child in runtime.children.values() {
+        let Ok(artifact_id) = mct_kernel::ComponentArtifactId::new(child.artifact_id.clone())
+        else {
+            continue;
+        };
+        let active = child.state == GovernedChildStateV1::Approved;
+        approvals.insert(
+            child.child_name.clone(),
+            crate::MctStoredChildApproval {
+                manifest_hash: Some(child.manifest_hash.clone()),
+                child_name: child.child_name.clone(),
+                artifact_id: artifact_id.clone(),
+                artifact_version: child.artifact_version.clone(),
+                approval_state: if active {
+                    mct_kernel::ChildApprovalState::Approved
+                } else {
+                    mct_kernel::ChildApprovalState::Revoked
+                },
+                vision_id: child.vision_id.clone(),
+                node_id: child.node_id.clone(),
+                project_id: None,
+                policy_revision: child.policy_revision,
+                updated_at: child.decided_at.to_string(),
+            },
+        );
+        assignments.insert(
+            child.child_name.clone(),
+            crate::MctStoredChildAssignment {
+                child_name: child.child_name.clone(),
+                artifact_id,
+                artifact_version: child.artifact_version.clone(),
+                assignment_state: if active {
+                    mct_kernel::ChildAssignmentState::Active
+                } else {
+                    mct_kernel::ChildAssignmentState::Revoked
+                },
+                vision_id: child.vision_id.clone(),
+                node_id: child.node_id.clone(),
+                project_id: None,
+                policy_revision: child.policy_revision,
+                updated_at: child.decided_at.to_string(),
+            },
+        );
+    }
+    (approvals, assignments)
+}
+
+fn governed_binding_state(peer: &mct_observation::GovernedPeerV1) -> mct_kernel::BindingState {
+    if peer.state == GovernedChildStateV1::Approved {
+        mct_kernel::BindingState::Admitted
+    } else {
+        mct_kernel::BindingState::Revoked
+    }
+}
+
+/// The ledger decides who is a peer. A `config.json` entry survives only as the
+/// host-side signature and ticket for a peer the ledger names identically.
+fn governed_peer_matches(
+    entry: &crate::MctPeerAddressBookEntry,
+    peer: &mct_observation::GovernedPeerV1,
+) -> bool {
+    entry.peer_node_id == peer.peer_node_id
+        && entry.binding_id == peer.binding_id
+        && entry.endpoint_id == peer.endpoint_id
+        && entry.vision_id == peer.vision_id
+        && entry.policy_revision == peer.policy_revision
+        && entry.expires_at == peer.expires_at
+        && entry.binding_state == governed_binding_state(peer)
+}
+
+fn apply_governed_runtime(config: &mut crate::MctDaemonConfig, runtime: &GovernedRuntimeV1) {
+    let (approvals, assignments) = governed_child_records(runtime);
+    config.child_approvals = approvals;
+    config.child_assignments = assignments;
+    config.peers.retain(|node, entry| {
+        runtime
+            .peers
+            .get(node)
+            .is_some_and(|peer| governed_peer_matches(entry, peer))
+    });
+}
+
+/// Rewrites `config.json` approvals and peers from the governed ledger. Other
+/// resident readers use that file; the ledger stays the only authority.
+pub fn project_governed_config(
+    config_path: &Path,
+    runtime: &GovernedRuntimeV1,
+) -> anyhow::Result<()> {
+    let store = MctDaemonConfigStore::new(config_path);
+    let mut config = store.load()?;
+    let (approvals, assignments) = governed_child_records(runtime);
+    config.child_approvals = approvals;
+    config.child_assignments = assignments;
+    config.peers.clear();
+    store.save(&config)?;
+    for peer in runtime.peers.values() {
+        store.upsert_peer(crate::MctPeerAddressBookEntry {
+            peer_node_id: peer.peer_node_id.clone(),
+            binding_id: peer.binding_id.clone(),
+            endpoint_id: peer.endpoint_id.clone(),
+            vision_id: peer.vision_id.clone(),
+            ticket: peer
+                .ticket
+                .clone()
+                .map(serde_json::from_value)
+                .transpose()?,
+            binding_signature_ref: None,
+            outbound_binding: None,
+            binding_state: governed_binding_state(peer),
+            policy_revision: peer.policy_revision,
+            expires_at: peer.expires_at.clone(),
+            updated_at: peer.decided_at.to_string(),
+        })?;
+    }
+    Ok(())
+}
+
 /// Proves the stored projection usable for exactly `expectation`.
 pub fn prove_authority_projection(
     state: &MctRuntimeStateStore,
@@ -183,6 +357,15 @@ pub fn local_execution_authority_snapshot_from_verified(
         .map_err(|_| LocalExecutionAuthoritySnapshotDenyV1::LocalPolicyUnavailable)?
         .local_identity
         .ok_or(LocalExecutionAuthoritySnapshotDenyV1::LocalPolicyUnavailable)?;
+    if replay.state.passkey_admin.is_some() {
+        return local_execution_authority_snapshot_from_proven(
+            governed_proven_projection(&head, &replay)?,
+            config_path,
+            children_dir,
+            state_path,
+            Ok(evaluated_at),
+        );
+    }
     let expectation = authority_projection_expectation_from_verified(&head, &replay)?;
     let state = MctRuntimeStateStore::open(state_path).map_err(|_| {
         LocalExecutionAuthoritySnapshotDenyV1::AuthorityProjection(
@@ -212,17 +395,37 @@ pub fn local_execution_authority_snapshot_from_proven(
 ) -> Result<LocalExecutionAuthoritySnapshot, LocalExecutionAuthoritySnapshotDenyV1> {
     let evaluated_at =
         mother_time.map_err(|_| LocalExecutionAuthoritySnapshotDenyV1::MotherClockUnavailable)?;
-    let config = MctDaemonConfigStore::new(config_path)
+    let mut config = MctDaemonConfigStore::new(config_path)
         .load()
         .map_err(|_| LocalExecutionAuthoritySnapshotDenyV1::LocalPolicyUnavailable)?;
-    let identity = config
-        .local_identity
-        .as_ref()
-        .ok_or(LocalExecutionAuthoritySnapshotDenyV1::LocalPolicyUnavailable)?;
     let ProvenAuthorityProjectionV1 {
         cursor: proven_cursor,
         projection,
     } = proven;
+    let governed = projection
+        .state
+        .passkey_admin
+        .as_ref()
+        .map(|passkey| passkey.runtime.clone());
+    if let Some(runtime) = &governed {
+        apply_governed_runtime(&mut config, runtime);
+    }
+    let identity = config
+        .local_identity
+        .as_ref()
+        .ok_or(LocalExecutionAuthoritySnapshotDenyV1::LocalPolicyUnavailable)?;
+    let (toy_catalog, toy_grants, watch_scopes) = match governed {
+        Some(runtime) => (
+            vec![directory_read_contract()],
+            runtime.toy_grants.into_values().collect(),
+            Vec::new(),
+        ),
+        None => (
+            projection.state.toy_catalog.into_values().collect(),
+            projection.state.toy_grants.into_values().collect(),
+            projection.state.watch_scopes.into_values().collect(),
+        ),
+    };
     let state = MctRuntimeStateStore::open(state_path)
         .map_err(|_| LocalExecutionAuthoritySnapshotDenyV1::LocalPolicyUnavailable)?;
 
@@ -314,9 +517,9 @@ pub fn local_execution_authority_snapshot_from_proven(
             grants_authority_epoch: grants_authority.authority_epoch,
             grants_authority_generation: grants_authority.generation,
             grants_authority_observation_id: grants_authority.source_authority_observation_id,
-            toy_catalog: projection.state.toy_catalog.into_values().collect(),
-            toy_grants: projection.state.toy_grants.into_values().collect(),
-            watch_scopes: projection.state.watch_scopes.into_values().collect(),
+            toy_catalog,
+            toy_grants,
+            watch_scopes,
             policy_revision: identity.policy_revision,
             vision_policy_revision: identity.policy_revision,
             child_local_node_id: child_projection.local_node_id,
@@ -808,5 +1011,61 @@ mod tests {
         assert!(!kernel_source.contains(&caller_context));
         assert!(!kernel_source.contains(&caller_authority));
         assert!(!kernel_source.contains(&copying_conversion));
+    }
+}
+
+#[cfg(test)]
+mod governed_peer_tests {
+    use super::*;
+
+    #[test]
+    fn governed_snapshot_keeps_only_peers_the_ledger_names_identically() {
+        let ts = |value: &str| Timestamp::new(value).unwrap();
+        let peer = mct_observation::GovernedPeerV1 {
+            peer_node_id: mct_kernel::MctNodeId::new("mother-b").unwrap(),
+            binding_id: mct_kernel::PeerBindingId::new("binding-b").unwrap(),
+            endpoint_id: mct_kernel::EndpointIdText::new("endpoint-b").unwrap(),
+            vision_id: mct_kernel::VisionId::new("vision-local").unwrap(),
+            ticket: None,
+            policy_revision: 1,
+            expires_at: ts("2099-01-01T00:00:00Z"),
+            state: GovernedChildStateV1::Approved,
+            decided_by: "ed25519:ops".into(),
+            decided_at: ts("2026-11-07T00:00:00Z"),
+        };
+        let entry = |node: &str, expires: &str| crate::MctPeerAddressBookEntry {
+            peer_node_id: mct_kernel::MctNodeId::new(node).unwrap(),
+            binding_id: mct_kernel::PeerBindingId::new("binding-b").unwrap(),
+            endpoint_id: mct_kernel::EndpointIdText::new("endpoint-b").unwrap(),
+            vision_id: mct_kernel::VisionId::new("vision-local").unwrap(),
+            ticket: None,
+            binding_signature_ref: Some("sig".into()),
+            outbound_binding: None,
+            binding_state: mct_kernel::BindingState::Admitted,
+            policy_revision: 1,
+            expires_at: ts(expires),
+            updated_at: "2026-11-07T00:00:00Z".into(),
+        };
+        let mut runtime = GovernedRuntimeV1::default();
+        runtime.peers.insert("mother-b".into(), peer);
+        let mut config = crate::MctDaemonConfig::default();
+        config
+            .peers
+            .insert("mother-b".into(), entry("mother-b", "2099-01-01T00:00:00Z"));
+        config
+            .peers
+            .insert("mother-x".into(), entry("mother-x", "2099-01-01T00:00:00Z"));
+        apply_governed_runtime(&mut config, &runtime);
+        assert_eq!(config.peers.keys().collect::<Vec<_>>(), ["mother-b"]);
+
+        let mut stretched = crate::MctDaemonConfig::default();
+        stretched
+            .peers
+            .insert("mother-b".into(), entry("mother-b", "2100-01-01T00:00:00Z"));
+        apply_governed_runtime(&mut stretched, &runtime);
+        assert!(
+            stretched.peers.is_empty(),
+            "config cannot extend a signed peer's expiry"
+        );
     }
 }

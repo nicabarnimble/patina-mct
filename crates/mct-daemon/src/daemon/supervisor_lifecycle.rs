@@ -144,6 +144,8 @@ trait SupervisorAdapter {
     fn start(&self, record: &SupervisorRecordV1) -> Result<()>;
     fn stop(&self, record: &SupervisorRecordV1) -> Result<()>;
     fn remove_policy(&self, record: &SupervisorRecordV1) -> Result<()>;
+    /// Install found the bootstrap writer held; it will refuse once it can record why.
+    fn writer_contention_observed(&self) {}
 }
 
 struct LaunchdSupervisorAdapter;
@@ -950,6 +952,7 @@ fn install_with_adapter(
     {
         Ok(ledger) => ledger,
         Err(error) if error.to_string().contains("writer lock") => {
+            adapter.writer_contention_observed();
             let attempt_id = generated_id("lifecycle-install-contention");
             let deadline = std::time::Instant::now() + Duration::from_secs(10);
             let mut refusal_writer = loop {
@@ -2428,6 +2431,7 @@ struct FakeSupervisorAdapter {
     fail_start: std::sync::Mutex<bool>,
     start_calls: std::sync::atomic::AtomicUsize,
     shutdown: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    contention: std::sync::atomic::AtomicBool,
 }
 
 #[cfg(test)]
@@ -2451,10 +2455,19 @@ impl FakeSupervisorAdapter {
     fn start_call_count(&self) -> usize {
         self.start_calls.load(std::sync::atomic::Ordering::SeqCst)
     }
+
+    fn contention_observed(&self) -> bool {
+        self.contention.load(std::sync::atomic::Ordering::SeqCst)
+    }
 }
 
 #[cfg(test)]
 impl SupervisorAdapter for FakeSupervisorAdapter {
+    fn writer_contention_observed(&self) {
+        self.contention
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
     fn ensure_domain_available(&self, _record: &SupervisorRecordV1) -> Result<()> {
         if *self.domain_missing.lock().unwrap() {
             bail!("launchd GUI domain unavailable; no fallback attempted");
@@ -3468,7 +3481,16 @@ mod tests {
                 losing_adapter_thread.as_ref(),
             )
         });
-        std::thread::sleep(Duration::from_millis(100));
+        // Release only after the loser saw the held writer; a fixed sleep let a
+        // slow runner reach the lock after release and install (PR #111 CI).
+        let observed_by = std::time::Instant::now() + Duration::from_secs(20);
+        while !losing_adapter.contention_observed() {
+            assert!(
+                std::time::Instant::now() < observed_by,
+                "loser never reached the held writer"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
         drop(held_bootstrap);
         let contention = loser.join().unwrap().unwrap_err();
         assert!(
@@ -4607,7 +4629,8 @@ status = "active"
             "expected_children_dir": paths.children,
             "expected_state_path": paths.state,
             "child_name": "slate-manager",
-            "project_root": project
+            "project_root": project,
+            "expires_at": "2099-01-01T00:00:00Z"
         });
         let (toy_status, toy_report) =
             uds_json(&paths.uds, "POST", "/toys/authorize-slate", &toy_request).await;

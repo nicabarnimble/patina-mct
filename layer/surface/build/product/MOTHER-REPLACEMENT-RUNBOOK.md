@@ -44,8 +44,9 @@ cargo run -p mct-daemon -- children approve <child-name> .mct/children \
   --ledger .mct/observations.jsonl
 
 # 4. Authorize concrete toy grants. Paths/name inputs select resources; they do not create authority by themselves.
-cargo run -p mct-daemon -- toys authorize-slate <child-name> /path/to/project --children-dir .mct/children --config .mct/config.json --state .mct/state.sqlite
-cargo run -p mct-daemon -- toys authorize-secret <child-name> <secret-name> --children-dir .mct/children --config .mct/config.json --state .mct/state.sqlite
+#    Every Toy grant carries an expiry: --expires-at <rfc3339>, default 30 days. Open-ended grants are denied.
+cargo run -p mct-daemon -- toys authorize-slate <child-name> /path/to/project [--expires-at <rfc3339>] --children-dir .mct/children --config .mct/config.json --state .mct/state.sqlite
+cargo run -p mct-daemon -- toys authorize-secret <child-name> <secret-name> [--expires-at <rfc3339>] --children-dir .mct/children --config .mct/config.json --state .mct/state.sqlite
 
 # 5. Invoke a typed WIT child through the authority-first path.
 cargo run -p mct-daemon -- wasm call-wit <child-name> patina:slate/control@0.1.0.list-work '[{"project":"/project","status":null,"kind":null}]' --project-root /path/to/project --children-dir .mct/children --config .mct/config.json --state .mct/state.sqlite --ledger .mct/observations.jsonl

@@ -188,6 +188,11 @@ fn idempotency_refusal_result(reason: MctIdempotencyReason) -> MctIrohCallHandle
             CallProtocolReason::IdempotencyInProgress,
             "request already in progress; retry later",
         ),
+        MctIdempotencyReason::UnkeyedDeadlineBeyondFence => (
+            CallProtocolOutcome::Malformed,
+            CallProtocolReason::MalformedCall,
+            "unkeyed call deadline exceeds its single-launch window",
+        ),
         MctIdempotencyReason::ExecuteFresh | MctIdempotencyReason::ReplayCompleted => (
             CallProtocolOutcome::Failed,
             CallProtocolReason::ExecutionFailed,
@@ -214,6 +219,9 @@ fn idempotency_reason_code(reason: MctIdempotencyReason) -> &'static str {
         MctIdempotencyReason::IdempotencyKeyReuseMismatch => "idempotency_key_reuse_mismatch",
         MctIdempotencyReason::IdempotencyBudgetFull => "idempotency_budget_full",
         MctIdempotencyReason::IdempotencyInProgress => "idempotency_in_progress",
+        MctIdempotencyReason::UnkeyedDeadlineBeyondFence => {
+            "idempotency_unkeyed_deadline_beyond_fence"
+        }
     }
 }
 
@@ -247,6 +255,9 @@ fn resident_idempotency_observation(
             "idempotency capacity unavailable; retry later"
         }
         MctIdempotencyReason::IdempotencyInProgress => "request already in progress; retry later",
+        MctIdempotencyReason::UnkeyedDeadlineBeyondFence => {
+            "unkeyed call deadline exceeds its single-launch window"
+        }
     };
     MctObservation {
         observation_id: ObservationId::new(format!(
@@ -374,9 +385,13 @@ where
     if !context.matches_request(&request) {
         return MctIrohCallHandlerResult::denied();
     }
-    let Some(idempotency_key) = request.idempotency_key.clone() else {
-        return execute().await;
-    };
+    // D-40: an unkeyed call is fenced under its own call ID. The writer-admitted
+    // reservation precedes launch and outlives the maximum call horizon, so lost
+    // SQLite history cannot launch the same call ID twice.
+    let idempotency_key = request
+        .idempotency_key
+        .clone()
+        .unwrap_or_else(|| format!("mct-unkeyed-call-id:{}", request.call.call_id));
     let caller_scope = resident_idempotency_caller_scope(&request, &context);
     let fingerprint = resident_idempotency_fingerprint(&request);
     // Later observations use execution identity, never the raw correlation ID.
@@ -391,7 +406,16 @@ where
             return MctIrohCallHandlerResult::failed("runtime unavailable");
         }
     };
+    // Past the fence an unkeyed retry would be fresh again, so its deadline must
+    // end inside the window: then every retry is either fenced or expired.
+    let unkeyed_beyond_fence =
+        request.idempotency_key.is_none() && request.call.deadline > expires_at;
     let reservation = match MctRuntimeStateStore::open(&state_path).and_then(|state| {
+        if unkeyed_beyond_fence {
+            return Ok(MctIdempotencyReservation::Refused(
+                MctIdempotencyReason::UnkeyedDeadlineBeyondFence,
+            ));
+        }
         state.reserve_call_idempotency(
             &caller_scope,
             &idempotency_key,
@@ -1115,9 +1139,30 @@ mod tests {
         assert_eq!(expired.outcome, CallProtocolOutcome::Completed);
         assert_eq!(durable_execution_count(&ledger_path), 3);
 
+        let mut beyond_fence = request.clone();
+        beyond_fence.idempotency_key = None;
+        beyond_fence.call.call_id = CallId::new("call-unkeyed-far-deadline").unwrap();
+        let refused = execute_resident_call_at(
+            paths.clone(),
+            ledger.clone(),
+            beyond_fence,
+            ResidentPayloadIngress::local(Some(payload.clone())),
+            now.clone(),
+        )
+        .await;
+        assert_eq!(refused.outcome, CallProtocolOutcome::Malformed);
+        assert_eq!(durable_execution_count(&ledger_path), 3);
+
         let mut unkeyed = request;
         unkeyed.idempotency_key = None;
         unkeyed.call.call_id = CallId::new("call-unkeyed-repeat").unwrap();
+        unkeyed.call.deadline = Timestamp::new(
+            now_value
+                .checked_add(jiff::SignedDuration::from_mins(10))
+                .unwrap()
+                .to_string(),
+        )
+        .unwrap();
         let first_unkeyed = execute_resident_call_at(
             paths.clone(),
             ledger.clone(),
@@ -1136,12 +1181,17 @@ mod tests {
         .await;
         assert_eq!(first_unkeyed.outcome, CallProtocolOutcome::Completed);
         assert_eq!(second_unkeyed.outcome, CallProtocolOutcome::Completed);
-        assert_eq!(durable_execution_count(&ledger_path), 5);
+        assert_eq!(
+            durable_execution_count(&ledger_path),
+            4,
+            "an unkeyed call ID launches once; its repeat replays the recorded reply"
+        );
         ledger.close().await;
 
         let ledger_text = std::fs::read_to_string(&ledger_path).unwrap();
         assert!(ledger_text.contains("idempotency_replay_completed"));
         assert!(ledger_text.contains("idempotency_key_reuse_mismatch"));
+        assert!(ledger_text.contains("idempotency_unkeyed_deadline_beyond_fence"));
         assert!(!ledger_text.contains("same-key"));
         assert!(!ledger_text.contains(r#"{\"results\":[41]}"#));
     }

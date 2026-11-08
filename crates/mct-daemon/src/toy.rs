@@ -1430,7 +1430,7 @@ mod tests {
             },
             constraints: ToyGrantConstraints {
                 starts_at: None,
-                expires_at: None,
+                expires_at: Some(call.deadline.clone()),
                 max_uses: None,
                 max_duration_ms: None,
                 locality_required: true,
