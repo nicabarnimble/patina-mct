@@ -11,7 +11,9 @@
 //! - `trace.jsonl` receives one line per event;
 //! - a file named `pause-next` makes the next span hold, and is consumed;
 //! - the held span writes `paused-<seq>.json` and waits for `release`, which it
-//!   consumes, for at most `NIC131_GATE_MAX_HOLD_MS` (default 30000 ms).
+//!   consumes, for at most `NIC131_GATE_MAX_HOLD_MS` (default 30000 ms);
+//! - a file named `fail-next` makes the next span report a write failure
+//!   without writing, and is consumed. Reads are untouched.
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,6 +24,7 @@ static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 pub(super) struct Span {
     dir: Option<PathBuf>,
     seq: u64,
+    fail: bool,
 }
 
 fn now() -> String {
@@ -50,7 +53,11 @@ fn append(dir: &std::path::Path, event: serde_json::Value) {
 /// Called after the snapshot is captured and before `config.json` is written.
 pub(super) fn enter(generation: Option<u64>, runtime: &mct_observation::GovernedRuntimeV1) -> Span {
     let Some(dir) = std::env::var_os("NIC131_GATE_DIR").map(PathBuf::from) else {
-        return Span { dir: None, seq: 0 };
+        return Span {
+            dir: None,
+            seq: 0,
+            fail: false,
+        };
     };
     let seq = SEQUENCE.fetch_add(1, Ordering::SeqCst) + 1;
     let peers: serde_json::Map<String, serde_json::Value> = runtime
@@ -103,13 +110,26 @@ pub(super) fn enter(generation: Option<u64>, runtime: &mct_observation::Governed
             }),
         );
     }
+    let fail = std::fs::remove_file(dir.join("fail-next")).is_ok();
+    if fail {
+        append(
+            &dir,
+            serde_json::json!({"event": "inject_write_failure", "seq": seq, "at": now(), "thread": thread()}),
+        );
+    }
     Span {
         dir: Some(dir),
         seq,
+        fail,
     }
 }
 
 impl Span {
+    /// True when this span must report a write failure instead of publishing.
+    pub(super) fn injected_write_failure(&self) -> bool {
+        self.fail
+    }
+
     /// Called with the publisher's own result, before it is returned.
     pub(super) fn exit(self, result: &anyhow::Result<()>) {
         if let Some(dir) = self.dir {

@@ -1192,7 +1192,13 @@ async fn project_governed_config_from(
     #[allow(clippy::needless_return)]
     {
         let span = super::nic131_gate::enter(nic131_generation, &runtime);
-        let result = mct_daemon::project_governed_config(config_path, &runtime);
+        let result = if span.injected_write_failure() {
+            Err(anyhow::anyhow!(
+                "nic131-witness injected config publication write failure"
+            ))
+        } else {
+            mct_daemon::project_governed_config(config_path, &runtime)
+        };
         span.exit(&result);
         return result;
     }
