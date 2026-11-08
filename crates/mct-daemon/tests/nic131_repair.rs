@@ -2035,3 +2035,75 @@ fn nic131_repair_stopped_writer_refuses_fresh_hello_and_call() {
         "a stopped runtime reads nothing"
     );
 }
+
+/// A call admitted by evaluation is held before the resident pipeline's
+/// dispatch-time receiver read; a revoke commits there. Dispatch refuses it.
+#[cfg(feature = "nic131-witness")]
+#[test]
+fn nic131_repair_revoke_between_call_evaluation_and_dispatch_refuses_execution() {
+    let mut g = governed();
+    let (hello, old, presented_p) = admitted_before_revoke(&g);
+    let ticket = g.mother.ticket();
+    let echo_runs = |mother: &Mother| mother.completed_runs_of("resident-echo");
+
+    // Control: the same hold with no revoke runs the Child once.
+    std::fs::write(g.gate.join("dispatch-pause-next"), "").unwrap();
+    let before_control = echo_runs(&g.mother);
+    let (control, control_reply) = std::thread::scope(|scope| {
+        let call = scope.spawn(|| {
+            g.p.call(
+                &ticket,
+                &hello.decision_id,
+                &presented_p.binding_id,
+                &old,
+                echo(),
+                "dispatch-control",
+            )
+        });
+        assert!(wait_for_marker(&g.gate, "dispatch-paused-", Duration::from_secs(20)).is_some());
+        std::fs::write(g.gate.join("dispatch-release"), "").unwrap();
+        call.join().unwrap()
+    });
+    assert!(success(&control_reply), "control call: {control}");
+    assert_eq!(echo_runs(&g.mother), before_control + 1);
+    clear_markers(&g.gate, "dispatch-paused-");
+
+    std::fs::write(g.gate.join("dispatch-pause-next"), "").unwrap();
+    let before = echo_runs(&g.mother);
+    let (fact, reply, revoke) = std::thread::scope(|scope| {
+        let call = scope.spawn(|| {
+            g.p.call(
+                &ticket,
+                &hello.decision_id,
+                &presented_p.binding_id,
+                &old,
+                echo(),
+                "dispatch-split",
+            )
+        });
+        assert!(wait_for_marker(&g.gate, "dispatch-paused-", Duration::from_secs(20)).is_some());
+        // Evaluation already admitted this call: its authority fact is in the ledger.
+        let admitted_facts = g.mother.ledger_for_trace("dispatch-split");
+        let revoke = revoke_p(&mut g.mother);
+        std::fs::write(g.gate.join("dispatch-release"), "").unwrap();
+        let (fact, reply) = call.join().unwrap();
+        println!(
+            "NIC131_DISPATCH_SPLIT {}",
+            json!({"facts_while_held": admitted_facts, "call": fact})
+        );
+        (fact, reply, revoke)
+    });
+    assert_eq!(revoke["status"], "completed", "{revoke}");
+    assert!(ledger_revoked_p(&g.mother));
+    assert!(!success(&reply), "{fact}");
+    assert_eq!(
+        reply.as_ref().map(|reply| reply.safe_message.as_str()),
+        Some("receiver authority changed; refresh hello"),
+        "the refusal must be the dispatch-time receiver check: {fact}"
+    );
+    assert!(
+        g.mother.runs_for_trace("dispatch-split").is_empty(),
+        "{fact}"
+    );
+    assert_eq!(echo_runs(&g.mother), before, "no Child ran");
+}

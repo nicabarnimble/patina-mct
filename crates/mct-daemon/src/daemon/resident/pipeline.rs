@@ -821,6 +821,8 @@ async fn execute_resident_call_at_with_context(
     {
         return MctIrohCallHandlerResult::malformed();
     }
+    #[cfg(feature = "nic131-witness")]
+    super::nic131_gate::dispatch_check(request.call.trace_context.trace_id.as_str());
     let current_receiver = match fresh_resident_receiver_identity(&paths, &ledger).await {
         Ok(identity) => identity,
         Err(error) => {

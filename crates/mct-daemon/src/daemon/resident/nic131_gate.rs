@@ -21,6 +21,9 @@
 //!   returns to the hello or call evaluator, which reads the receiver
 //!   authority next. It writes `binding-paused-<seq>.json` and waits for
 //!   `binding-release`.
+//! - The resident pipeline's dispatch check. `dispatch-pause-next` holds an
+//!   evaluated call before its dispatch-time receiver-identity read. It writes
+//!   `dispatch-paused-<seq>.json` and waits for `dispatch-release`.
 //! - The resident writer. `writer-fence-next` sets the writer's own fence flag
 //!   when it receives its next command; `writer-stop-next` makes the writer
 //!   task end there, as a dead writer would. Both are consumed.
@@ -88,6 +91,15 @@ const BINDING_HOLD: HoldNames = HoldNames {
     timeout: "binding_hold_timeout",
 };
 
+const DISPATCH_HOLD: HoldNames = HoldNames {
+    pause: "dispatch-pause-next",
+    paused: "dispatch-paused",
+    release: "dispatch-release",
+    held: "dispatch_hold",
+    released: "dispatch_released",
+    timeout: "dispatch_hold_timeout",
+};
+
 /// Holds the current thread once, if the pause file exists, until the release
 /// file appears or the hold limit passes. Adds no await.
 fn hold(dir: &std::path::Path, seq: u64, names: &HoldNames, marker: serde_json::Value) {
@@ -150,6 +162,23 @@ pub(super) fn binding_read(outcome: serde_json::Value) {
         }),
     );
     hold(&dir, seq, &BINDING_HOLD, serde_json::json!({"seq": seq}));
+}
+
+/// Called when an evaluated call reaches the resident pipeline, before its
+/// dispatch-time receiver-identity read. Traces, and can hold once.
+pub(super) fn dispatch_check(call_trace: &str) {
+    let Some(dir) = gate_dir() else {
+        return;
+    };
+    let seq = SEQUENCE.fetch_add(1, Ordering::SeqCst) + 1;
+    append(
+        &dir,
+        serde_json::json!({
+            "event": "dispatch_check", "seq": seq, "at": now(), "thread": thread(),
+            "trace": call_trace,
+        }),
+    );
+    hold(&dir, seq, &DISPATCH_HOLD, serde_json::json!({"seq": seq}));
 }
 
 /// A fault for the resident writer to take when it receives its next command.
