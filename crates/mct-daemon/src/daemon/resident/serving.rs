@@ -1175,12 +1175,28 @@ async fn project_governed_config_from(
         .projected_authority(state_path.to_path_buf())
         .await
         .map_err(|error| anyhow::anyhow!(error))?;
+    #[cfg(feature = "nic131-witness")]
+    let nic131_generation = projected
+        .replay
+        .current_authority
+        .as_ref()
+        .map(|authority| authority.generation);
     let runtime = projected
         .replay
         .state
         .passkey_admin
         .context("governed ledger lost its passkey state")?
         .runtime;
+    // The witness gate returns early so the default build keeps the original tail.
+    #[cfg(feature = "nic131-witness")]
+    #[allow(clippy::needless_return)]
+    {
+        let span = super::nic131_gate::enter(nic131_generation, &runtime);
+        let result = mct_daemon::project_governed_config(config_path, &runtime);
+        span.exit(&result);
+        return result;
+    }
+    #[cfg(not(feature = "nic131-witness"))]
     mct_daemon::project_governed_config(config_path, &runtime)
 }
 
