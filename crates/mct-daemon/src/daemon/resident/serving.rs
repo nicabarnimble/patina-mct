@@ -1087,7 +1087,36 @@ async fn wait_for_resident_control_bound(
 /// the writer's verified replay decides which `config.json` peers count, so a
 /// held, failed or skipped publication of that file cannot admit a peer the
 /// ledger revoked. A ledger read failure refuses the connection.
+#[cfg(not(feature = "nic131-witness"))]
 pub(super) async fn load_peer_bindings_for_iroh(
+    path: PathBuf,
+    governed: Option<ResidentLedgerWriter>,
+) -> mct_iroh::MotherIrohEndpointResult<MctPeerAuthoritySnapshot> {
+    read_peer_bindings_for_iroh(path, governed).await
+}
+
+/// The same read, then the witness gate: it traces the result and can hold
+/// the evaluator once before its receiver-authority read. Feature-only.
+#[cfg(feature = "nic131-witness")]
+pub(super) async fn load_peer_bindings_for_iroh(
+    path: PathBuf,
+    governed: Option<ResidentLedgerWriter>,
+) -> mct_iroh::MotherIrohEndpointResult<MctPeerAuthoritySnapshot> {
+    let result = read_peer_bindings_for_iroh(path, governed).await;
+    super::nic131_gate::binding_read(match &result {
+        Ok(snapshot) => serde_json::json!({
+            "bindings": snapshot.bindings.iter().map(|binding| serde_json::json!({
+                "peer": binding.scope.mct_node_id,
+                "binding_id": binding.binding_id,
+                "state": binding.binding_state,
+            })).collect::<Vec<_>>(),
+        }),
+        Err(error) => serde_json::json!({"error": format!("{error:#}")}),
+    });
+    result
+}
+
+async fn read_peer_bindings_for_iroh(
     path: PathBuf,
     governed: Option<ResidentLedgerWriter>,
 ) -> mct_iroh::MotherIrohEndpointResult<MctPeerAuthoritySnapshot> {

@@ -612,6 +612,14 @@ impl ResidentLedgerWriter {
             tokio::sync::mpsc::channel::<ResidentLedgerCommand>(RESIDENT_LEDGER_QUEUE_CAPACITY);
         let task = tokio::task::spawn_blocking(move || {
             while let Some(command) = receiver.blocking_recv() {
+                #[cfg(feature = "nic131-witness")]
+                match super::nic131_gate::writer_fault() {
+                    Some(super::nic131_gate::WriterFault::Fence) => {
+                        task_fenced.store(true, Ordering::SeqCst);
+                    }
+                    Some(super::nic131_gate::WriterFault::Stop) => break,
+                    None => {}
+                }
                 match command {
                     ResidentLedgerCommand::Write(write) => {
                         let appended_at = mct_daemon::current_timestamp_string();

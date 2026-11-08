@@ -733,7 +733,7 @@ struct PeerClient {
     endpoint: Option<MotherIrohEndpoint>,
     node: String,
     endpoint_id: String,
-    sequence: std::cell::Cell<u32>,
+    sequence: std::sync::atomic::AtomicU32,
 }
 
 struct Presented {
@@ -783,13 +783,14 @@ impl PeerClient {
             endpoint: Some(endpoint),
             node: node.to_owned(),
             endpoint_id,
-            sequence: std::cell::Cell::new(0),
+            sequence: std::sync::atomic::AtomicU32::new(0),
         }
     }
 
     fn next(&self) -> u32 {
-        self.sequence.set(self.sequence.get() + 1);
-        self.sequence.get()
+        self.sequence
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1
     }
 
     fn hello(
@@ -1046,12 +1047,19 @@ fn send_in_background(mother: &mut Mother, request: &Value) -> std::thread::Join
 
 #[cfg(feature = "nic131-witness")]
 fn wait_for_hold(gate: &Path, timeout: Duration) -> Option<Value> {
+    wait_for_marker(gate, "paused-", timeout)
+}
+
+/// Waits for the gate's marker file with this prefix: the held thread wrote it
+/// after its boundary and before it blocked.
+#[cfg(feature = "nic131-witness")]
+fn wait_for_marker(gate: &Path, prefix: &str, timeout: Duration) -> Option<Value> {
     let deadline = Instant::now() + timeout;
     loop {
         let found = std::fs::read_dir(gate).ok().and_then(|entries| {
             entries
                 .filter_map(Result::ok)
-                .find(|entry| entry.file_name().to_string_lossy().starts_with("paused-"))
+                .find(|entry| entry.file_name().to_string_lossy().starts_with(prefix))
         });
         if let Some(entry) = found {
             return std::fs::read_to_string(entry.path())
@@ -1640,4 +1648,390 @@ fn nic131_repair_governed_peers_exchange_receiver_issued_proof_and_call() {
     let call = resident_call(&origin, remote(), "revoked-by-receiver");
     assert_ne!(call["outcome"], "completed", "{call}");
     assert_eq!(runs(&receiver), 2);
+}
+
+// ---------------------------------------------------------------- split reads
+//
+// Hello and call each read the peer bindings and then the receiver authority,
+// with other work between. The gate holds the evaluator after its binding
+// read and before its receiver-authority read; a revoke commits in between.
+
+#[cfg(feature = "nic131-witness")]
+fn binding_reads(gate: &Path) -> Vec<Value> {
+    read_trace(gate)
+        .into_iter()
+        .filter(|event| event["event"] == "binding_read")
+        .collect()
+}
+
+#[cfg(feature = "nic131-witness")]
+fn binding_state_in(event: &Value, peer: &str) -> Value {
+    event["outcome"]["bindings"]
+        .as_array()
+        .and_then(|bindings| bindings.iter().find(|binding| binding["peer"] == peer))
+        .map(|binding| binding["state"].clone())
+        .unwrap_or(Value::Null)
+}
+
+#[cfg(feature = "nic131-witness")]
+fn release_binding(gate: &Path) {
+    std::fs::write(gate.join("binding-release"), "").unwrap();
+}
+
+#[cfg(feature = "nic131-witness")]
+fn clear_markers(gate: &Path, prefix: &str) {
+    for entry in std::fs::read_dir(gate).unwrap().filter_map(Result::ok) {
+        if entry.file_name().to_string_lossy().starts_with(prefix) {
+            std::fs::remove_file(entry.path()).unwrap();
+        }
+    }
+}
+
+/// A hello whose binding read saw peer-p admitted must not come back admitted
+/// when the revoke committed before its receiver-authority read.
+#[cfg(feature = "nic131-witness")]
+#[test]
+fn nic131_repair_revoke_between_hello_binding_and_receiver_reads_refuses_admission() {
+    let mut g = governed();
+    let (_, old, _) = admitted_before_revoke(&g);
+    let ticket = g.mother.ticket();
+
+    // Control: the same hold with no revoke still admits.
+    std::fs::write(g.gate.join("binding-pause-next"), "").unwrap();
+    let presented_p = presented(&g.mother, "peer-p");
+    let (control, control_hello) = std::thread::scope(|scope| {
+        let hello = scope.spawn(|| {
+            g.p.hello(&ticket, &presented_p, VISION, "split-hello-control")
+        });
+        assert!(
+            wait_for_marker(&g.gate, "binding-paused-", Duration::from_secs(20)).is_some(),
+            "the control hello's binding read was not held"
+        );
+        release_binding(&g.gate);
+        hello.join().unwrap()
+    });
+    assert!(admitted(&control_hello), "control hello: {control}");
+    clear_markers(&g.gate, "binding-paused-");
+
+    // The revoke commits between the hello's two reads.
+    std::fs::write(g.gate.join("binding-pause-next"), "").unwrap();
+    let (fact, hello, revoke) = std::thread::scope(|scope| {
+        let hello = scope.spawn(|| g.p.hello(&ticket, &presented_p, VISION, "split-hello"));
+        assert!(
+            wait_for_marker(&g.gate, "binding-paused-", Duration::from_secs(20)).is_some(),
+            "the hello's binding read was not held"
+        );
+        let read = binding_reads(&g.gate).last().cloned().unwrap();
+        assert_eq!(
+            binding_state_in(&read, "peer-p"),
+            "admitted",
+            "the held binding read must have seen peer-p admitted: {read}"
+        );
+        let revoke = revoke_p(&mut g.mother);
+        release_binding(&g.gate);
+        let (fact, hello) = hello.join().unwrap();
+        (fact, hello, revoke)
+    });
+    assert_eq!(revoke["status"], "completed", "{revoke}");
+    assert!(ledger_revoked_p(&g.mother));
+    let current: GrantsAuthorityIdentity =
+        serde_json::from_value(g.mother.receiver_authority()).unwrap();
+    assert!(current.generation > old.generation);
+    println!(
+        "NIC131_SPLIT_HELLO {}",
+        json!({"hello": fact, "current": current, "pre_revoke": old})
+    );
+    // Execution: whatever the hello said, a call on it runs nothing.
+    if let Some(response) = hello.as_ref().filter(|_| admitted(&hello)) {
+        let identity = response.receiving_grants_authority.clone().unwrap();
+        let (call, reply) = g.p.call(
+            &ticket,
+            &response.decision_id,
+            &presented_p.binding_id,
+            &identity,
+            echo(),
+            "split-hello-call",
+        );
+        assert!(!success(&reply), "{call}");
+        assert!(
+            g.mother.runs_for_trace("split-hello-call").is_empty(),
+            "{call}"
+        );
+    }
+    // Admission: the hello is refused.
+    assert!(
+        !admitted(&hello),
+        "the hello read peer-p admitted, the revoke committed, and the hello still came back admitted with generation {:?}: {fact}",
+        hello
+            .as_ref()
+            .and_then(|h| h.receiving_grants_authority.as_ref())
+            .map(|a| a.generation)
+    );
+}
+
+/// A call whose binding read saw peer-p admitted is refused when the revoke
+/// committed before its receiver-authority read: the expectation it carries
+/// names the pre-revoke generation.
+#[cfg(feature = "nic131-witness")]
+#[test]
+fn nic131_repair_revoke_between_call_binding_and_receiver_reads_refuses_dispatch() {
+    let mut g = governed();
+    let (hello, old, presented_p) = admitted_before_revoke(&g);
+    let ticket = g.mother.ticket();
+    let echo_runs = |mother: &Mother| mother.completed_runs_of("resident-echo");
+
+    // Control: the same hold with no revoke still runs the Child once.
+    std::fs::write(g.gate.join("binding-pause-next"), "").unwrap();
+    let before_control = echo_runs(&g.mother);
+    let (control, control_reply) = std::thread::scope(|scope| {
+        let call = scope.spawn(|| {
+            g.p.call(
+                &ticket,
+                &hello.decision_id,
+                &presented_p.binding_id,
+                &old,
+                echo(),
+                "split-call-control",
+            )
+        });
+        assert!(wait_for_marker(&g.gate, "binding-paused-", Duration::from_secs(20)).is_some());
+        release_binding(&g.gate);
+        call.join().unwrap()
+    });
+    assert!(success(&control_reply), "control call: {control}");
+    assert_eq!(echo_runs(&g.mother), before_control + 1);
+    clear_markers(&g.gate, "binding-paused-");
+
+    // The revoke commits between the call's two reads.
+    std::fs::write(g.gate.join("binding-pause-next"), "").unwrap();
+    let before = echo_runs(&g.mother);
+    let (fact, reply, revoke) = std::thread::scope(|scope| {
+        let call = scope.spawn(|| {
+            g.p.call(
+                &ticket,
+                &hello.decision_id,
+                &presented_p.binding_id,
+                &old,
+                echo(),
+                "split-call",
+            )
+        });
+        assert!(wait_for_marker(&g.gate, "binding-paused-", Duration::from_secs(20)).is_some());
+        let read = binding_reads(&g.gate).last().cloned().unwrap();
+        assert_eq!(binding_state_in(&read, "peer-p"), "admitted", "{read}");
+        let revoke = revoke_p(&mut g.mother);
+        release_binding(&g.gate);
+        let (fact, reply) = call.join().unwrap();
+        (fact, reply, revoke)
+    });
+    assert_eq!(revoke["status"], "completed", "{revoke}");
+    assert!(ledger_revoked_p(&g.mother));
+    let ledger = g.mother.ledger_for_trace("split-call");
+    println!(
+        "NIC131_SPLIT_CALL {}",
+        json!({"call": fact, "ledger": ledger})
+    );
+    assert!(!success(&reply), "{fact}");
+    assert_eq!(
+        reply.as_ref().map(|reply| reply.safe_message.as_str()),
+        Some("receiver authority changed; refresh hello"),
+        "the refusal must be the receiver-generation check: {fact}"
+    );
+    assert!(g.mother.runs_for_trace("split-call").is_empty(), "{fact}");
+    assert_eq!(echo_runs(&g.mother), before, "no Child ran");
+
+    // Stale-expectation control after the revoke, with no hold.
+    let (fact, reply) = g.p.call(
+        &ticket,
+        &hello.decision_id,
+        &presented_p.binding_id,
+        &old,
+        echo(),
+        "after-revoke-stale-call",
+    );
+    assert!(!success(&reply), "{fact}");
+    assert_eq!(echo_runs(&g.mother), before);
+}
+
+// ---------------------------------------------------------------- writer faults
+
+/// The writer takes the armed fault when it receives its next command. An
+/// unknown peer's hello sends one (its governed binding read) and is recorded
+/// as the trigger, not as a probe.
+#[cfg(feature = "nic131-witness")]
+fn trigger_writer_fault(g: &Governed, label: &str) -> Value {
+    g.q.hello(
+        &g.mother.ticket(),
+        &Presented {
+            binding_id: "binding-peer-q".into(),
+            signature_ref: None,
+            policy_revision: Some(1),
+            expires_at: None,
+        },
+        VISION,
+        &format!("{label}-trigger"),
+    )
+    .0
+}
+
+#[cfg(feature = "nic131-witness")]
+fn assert_writer_fault_refuses(
+    g: &Governed,
+    label: &str,
+    error_fragment: &str,
+    before: &(MctHelloResponse, GrantsAuthorityIdentity, Presented),
+) {
+    let (hello, old, presented_p) = before;
+    let echo_before = g.mother.completed_runs_of("resident-echo");
+    let dir_before = g.mother.completed_runs_of("resident-dir");
+    let reads_before = binding_reads(&g.gate).len();
+    let ticket = g.mother.ticket();
+    let probes = [
+        (
+            g.p.hello(&ticket, presented_p, VISION, &format!("{label}-p-hello"))
+                .0,
+            "p-hello",
+        ),
+        (
+            g.q.hello(
+                &ticket,
+                &Presented {
+                    binding_id: "binding-peer-q".into(),
+                    signature_ref: None,
+                    policy_revision: Some(1),
+                    expires_at: None,
+                },
+                VISION,
+                &format!("{label}-q-hello"),
+            )
+            .0,
+            "q-hello",
+        ),
+        (
+            g.p.call(
+                &ticket,
+                &hello.decision_id,
+                &presented_p.binding_id,
+                old,
+                echo(),
+                &format!("{label}-p-echo"),
+            )
+            .0,
+            "p-echo",
+        ),
+        (
+            g.p.call(
+                &ticket,
+                &hello.decision_id,
+                &presented_p.binding_id,
+                old,
+                dir_target(),
+                &format!("{label}-p-dir"),
+            )
+            .0,
+            "p-dir",
+        ),
+    ];
+    let reads: Vec<Value> = binding_reads(&g.gate)
+        .into_iter()
+        .skip(reads_before)
+        .collect();
+    let status = uds(&g.mother.socket, "GET", "/status", None).1;
+    println!(
+        "NIC131_WRITER_FAULT {}",
+        json!({"label": label, "probes": probes.iter().map(|(fact, name)| json!({"probe": name, "fact": fact})).collect::<Vec<_>>(), "binding_reads": reads, "status": status})
+    );
+    for (fact, name) in &probes {
+        assert!(
+            fact["transport_error"].is_string(),
+            "{label} {name}: a failed binding load ends the connection before any evaluation: {fact}"
+        );
+    }
+    assert_eq!(
+        reads.len(),
+        probes.len(),
+        "{label}: each probe made one binding read: {reads:?}"
+    );
+    for read in &reads {
+        let error = read["outcome"]["error"].as_str().unwrap_or("");
+        assert!(
+            error.contains("read governed peers") && error.contains(error_fragment),
+            "{label}: classification must be a failed governed binding load, not config fallback: {read}"
+        );
+    }
+    for trace in ["p-echo", "p-dir"] {
+        assert!(
+            g.mother
+                .runs_for_trace(&format!("{label}-{trace}"))
+                .is_empty()
+        );
+    }
+    assert_eq!(g.mother.completed_runs_of("resident-echo"), echo_before);
+    assert_eq!(g.mother.completed_runs_of("resident-dir"), dir_before);
+}
+
+/// The writer's own fence flag is set: fresh hellos and calls are refused at
+/// the governed binding read, with nothing run and no config-only fallback.
+#[cfg(feature = "nic131-witness")]
+#[test]
+fn nic131_repair_fenced_writer_refuses_fresh_hello_and_call() {
+    let g = governed();
+    // Positive control: the same peer's hello and both Children work first.
+    let before = admitted_before_revoke(&g);
+    std::fs::write(g.gate.join("writer-fence-next"), "").unwrap();
+    let trigger = trigger_writer_fault(&g, "fenced");
+    let status = uds(&g.mother.socket, "GET", "/status", None).1;
+    println!(
+        "NIC131_FENCE_TRIGGER {}",
+        json!({"trigger": trigger, "status": status})
+    );
+    assert!(
+        read_trace(&g.gate)
+            .iter()
+            .any(|event| event["event"] == "writer_fenced"),
+        "the writer did not take the fence"
+    );
+    assert_eq!(status["readiness"], "not_ready", "{status}");
+    assert_eq!(
+        status["safe_message"], "resident observation writer fenced",
+        "{status}"
+    );
+    assert_writer_fault_refuses(&g, "fenced", "fenced", &before);
+}
+
+/// The writer task ends, as a dead writer would: fresh hellos and calls are
+/// refused at the governed binding read. A stopped runtime is a different
+/// class: no binding read happens at all.
+#[cfg(feature = "nic131-witness")]
+#[test]
+fn nic131_repair_stopped_writer_refuses_fresh_hello_and_call() {
+    let mut g = governed();
+    let before = admitted_before_revoke(&g);
+    std::fs::write(g.gate.join("writer-stop-next"), "").unwrap();
+    let trigger = trigger_writer_fault(&g, "stopped");
+    println!("NIC131_STOP_TRIGGER {}", json!({"trigger": trigger}));
+    assert!(
+        read_trace(&g.gate)
+            .iter()
+            .any(|event| event["event"] == "writer_stopped"),
+        "the writer did not stop"
+    );
+    assert_writer_fault_refuses(&g, "stopped", "governed peer read", &before);
+
+    // Stopped runtime: the process is gone, so no binding read happens.
+    let reads_before = binding_reads(&g.gate).len();
+    let presented_p = presented(&g.mother, "peer-p");
+    let ticket = g.mother.ticket();
+    g.mother.stop();
+    let (fact, hello) =
+        g.p.hello(&ticket, &presented_p, VISION, "stopped-runtime-hello");
+    assert!(
+        hello.is_none() && fact["transport_error"].is_string(),
+        "{fact}"
+    );
+    assert_eq!(
+        binding_reads(&g.gate).len(),
+        reads_before,
+        "a stopped runtime reads nothing"
+    );
 }
