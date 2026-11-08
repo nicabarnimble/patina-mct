@@ -93,6 +93,16 @@ fn private_tempdir() -> tempfile::TempDir {
     dir
 }
 
+fn random_secret() -> [u8; 32] {
+    let mut secret = [0_u8; 32];
+    getrandom::fill(&mut secret).expect("OS randomness for disposable test identity");
+    secret
+}
+
+fn random_secret_hex() -> String {
+    const_hex::encode(random_secret())
+}
+
 fn sign_root(prepared: &Value, secret: &[u8; 32]) -> Value {
     let key = p256::ecdsa::SigningKey::from_slice(secret).unwrap();
     let mut auth = Sha256::digest(b"admin.example.test").to_vec();
@@ -1562,8 +1572,8 @@ fn wait_for_surfaces(mother: &Mother, peer: &str) -> usize {
 #[test]
 fn nic131_repair_governed_peers_exchange_receiver_issued_proof_and_call() {
     let dir = private_tempdir();
-    let mut origin = Mother::new(dir.path(), "mother-a", [7; 32]);
-    let mut receiver = Mother::new(dir.path(), "mother-b", [9; 32]);
+    let mut origin = Mother::new(dir.path(), "mother-a", random_secret());
+    let mut receiver = Mother::new(dir.path(), "mother-b", random_secret());
     origin.bootstrap();
     receiver.bootstrap();
     stage_and_approve(&mut origin, "resident-echo", &echo_wasm(), ECHO_MANIFEST);
@@ -1590,17 +1600,41 @@ fn nic131_repair_governed_peers_exchange_receiver_issued_proof_and_call() {
     assert_eq!(admitted["status"], "completed", "{admitted}");
     let runs = |receiver: &Mother| receiver.completed_runs_of("resident-remote");
 
-    // Absent proof: admitted, but no route.
+    // Absent proof: admitted, but no route and no execution.
     let absent = admit_with_proof(&mut origin, &b_ticket, None);
     assert_eq!(absent["status"], "completed", "{absent}");
     origin.restart().unwrap();
-    let call = resident_call(&origin, remote(), "absent-proof");
-    assert_ne!(call["outcome"], "completed", "{call}");
+    let absent_call = resident_call(&origin, remote(), "absent-proof");
+    assert_ne!(absent_call["outcome"], "completed", "{absent_call}");
     assert_eq!(runs(&receiver), 0);
 
     // Unknown target: no route either.
-    let call = resident_call(&origin, ("patina:nic131-none", "control@0.1.0"), "unknown");
-    assert_ne!(call["outcome"], "completed", "{call}");
+    let unknown_target_call =
+        resident_call(&origin, ("patina:nic131-none", "control@0.1.0"), "unknown");
+    assert_ne!(
+        unknown_target_call["outcome"], "completed",
+        "{unknown_target_call}"
+    );
+
+    // Unknown peer: the live receiver refuses hello before any Child execution.
+    let unknown_peer = PeerClient::new(&random_secret_hex(), "mother-never-admitted");
+    let unknown_presented = Presented {
+        binding_id: "binding-mother-never-admitted".into(),
+        signature_ref: None,
+        policy_revision: Some(1),
+        expires_at: Some(plus_secs(3600)),
+    };
+    let (unknown_peer_fact, unknown_admitted, unknown_call_ok) = probe(
+        &receiver,
+        &unknown_peer,
+        &unknown_presented,
+        VISION,
+        None,
+        remote(),
+        "unknown-peer",
+    );
+    assert!(!unknown_admitted && !unknown_call_ok, "{unknown_peer_fact}");
+    assert_eq!(runs(&receiver), 0, "unknown peer executed a Child");
 
     // Supported exchange: the receiver issues, the origin's person records it.
     let proof = issued_proof(&receiver, "mother-a");
@@ -1616,9 +1650,12 @@ fn nic131_repair_governed_peers_exchange_receiver_issued_proof_and_call() {
         wait_for_surfaces(&origin, "mother-b") > 0,
         "no surface learned with the proof"
     );
-    let call = resident_call(&origin, remote(), "valid-proof");
-    assert_eq!(call["outcome"], "completed", "{call}");
-    assert_eq!(call["route_taken"]["node_id"], "mother-b", "{call}");
+    let valid_call = resident_call(&origin, remote(), "valid-proof");
+    assert_eq!(valid_call["outcome"], "completed", "{valid_call}");
+    assert_eq!(
+        valid_call["route_taken"]["node_id"], "mother-b",
+        "{valid_call}"
+    );
     assert_eq!(runs(&receiver), 1);
 
     // Wrong proof: one changed character in the receiver's signature.
@@ -1629,15 +1666,21 @@ fn nic131_repair_governed_peers_exchange_receiver_issued_proof_and_call() {
     wrong["signature_ref"] = json!(format!("{}{flipped}", &signature[..signature.len() - 1]));
     let replaced = admit_with_proof(&mut origin, &b_ticket, Some(&wrong));
     assert_eq!(replaced["status"], "completed", "{replaced}");
-    let call = resident_call(&origin, remote(), "wrong-proof");
-    assert_ne!(call["outcome"], "completed", "{call}");
-    assert_eq!(runs(&receiver), 1);
+    let wrong_proof_call = resident_call(&origin, remote(), "wrong-proof");
+    assert_ne!(
+        wrong_proof_call["outcome"], "completed",
+        "{wrong_proof_call}"
+    );
+    assert_eq!(runs(&receiver), 1, "invalid proof executed a Child");
 
     // Valid again, then the receiver revokes the origin.
     let restored = admit_with_proof(&mut origin, &b_ticket, Some(&proof));
     assert_eq!(restored["status"], "completed", "{restored}");
-    let call = resident_call(&origin, remote(), "valid-again");
-    assert_eq!(call["outcome"], "completed", "{call}");
+    let valid_again_call = resident_call(&origin, remote(), "valid-again");
+    assert_eq!(
+        valid_again_call["outcome"], "completed",
+        "{valid_again_call}"
+    );
     assert_eq!(runs(&receiver), 2);
     let revoked = receiver.govern(
         "peer_revoke",
@@ -1645,9 +1688,24 @@ fn nic131_repair_governed_peers_exchange_receiver_issued_proof_and_call() {
         &json!({"peer_node_id": "mother-a"}),
     );
     assert_eq!(revoked["status"], "completed", "{revoked}");
-    let call = resident_call(&origin, remote(), "revoked-by-receiver");
-    assert_ne!(call["outcome"], "completed", "{call}");
-    assert_eq!(runs(&receiver), 2);
+    let revoked_call = resident_call(&origin, remote(), "revoked-by-receiver");
+    assert_ne!(revoked_call["outcome"], "completed", "{revoked_call}");
+    assert_eq!(runs(&receiver), 2, "revoked peer executed a Child");
+
+    println!(
+        "NIC131_CONTAINER_SMOKE_RECEIPT {}",
+        json!({
+            "schema": "nic131-container-smoke/v1",
+            "readiness": {"mother_a": "ready", "mother_b": "ready"},
+            "valid_proof": {"outcome": valid_call["outcome"], "remote_completed_runs": 1},
+            "unknown_peer": {"hello_admitted": unknown_admitted, "call_succeeded": unknown_call_ok, "remote_completed_runs": 0},
+            "invalid_proof": {"outcome": wrong_proof_call["outcome"], "remote_completed_runs_after": 1},
+            "revoked_peer": {"outcome": revoked_call["outcome"], "remote_completed_runs_after": 2},
+            "final_remote_completed_runs": runs(&receiver),
+            "proof_issued_by_receiver": stored["signature_ref"] == proof["signature_ref"],
+            "transport": "iroh-loopback-relay-disabled"
+        })
+    );
 }
 
 // ---------------------------------------------------------------- split reads
