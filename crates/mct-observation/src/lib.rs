@@ -6,6 +6,8 @@
 #![forbid(unsafe_code)]
 
 mod governed_runtime;
+#[cfg(feature = "nic131-witness")]
+mod nic131_witness_clock;
 pub use governed_runtime::{
     GOVERNED_DIRECTORY_READ_ACTION, GOVERNED_DIRECTORY_READ_TOY_ID, GOVERNED_ROUTES,
     GovernedChildStateV1, GovernedChildV1, GovernedPeerV1, GovernedRuntimeV1,

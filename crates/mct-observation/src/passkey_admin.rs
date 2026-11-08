@@ -91,6 +91,10 @@ fn digest(s: &str) -> bool {
 fn now() -> Timestamp {
     Timestamp::new(jiff::Timestamp::now().to_string()).expect("system time")
 }
+#[cfg(feature = "nic131-witness")]
+fn command_clock() -> Timestamp {
+    super::nic131_witness_clock::pop().unwrap_or_else(now)
+}
 impl PasskeyAdminFactV1 {
     fn id(&self) -> Result<String> {
         Ok(format!(
@@ -392,7 +396,20 @@ impl JsonlObservationLedger {
         scope: AdminKeyScopeV1,
         effect: impl FnOnce(&str) -> Result<T>,
     ) -> Result<T> {
-        self.execute_passkey_command_with_clock(request, route, scope, now, effect)
+        #[cfg(feature = "nic131-witness")]
+        {
+            return self.execute_passkey_command_with_clock(
+                request,
+                route,
+                scope,
+                command_clock,
+                effect,
+            );
+        }
+        #[cfg(not(feature = "nic131-witness"))]
+        {
+            self.execute_passkey_command_with_clock(request, route, scope, now, effect)
+        }
     }
     pub(super) fn execute_passkey_command_with_clock<T>(
         &mut self,
