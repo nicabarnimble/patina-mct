@@ -160,8 +160,14 @@ enum ResidentLedgerCommand {
         state_path: PathBuf,
         ack: tokio::sync::oneshot::Sender<std::result::Result<ResidentProjectedAuthority, String>>,
     },
+    /// The governed peers the writer's verified replay names right now.
+    GovernedPeers {
+        ack: tokio::sync::oneshot::Sender<std::result::Result<GovernedPeers, String>>,
+    },
     Shutdown(tokio::sync::oneshot::Sender<()>),
 }
+
+pub(crate) type GovernedPeers = std::collections::BTreeMap<String, mct_observation::GovernedPeerV1>;
 
 /// The writer's verified head and replay, with the authority projection
 /// published and proven for exactly that head.
@@ -197,6 +203,18 @@ impl ResidentProjectedAuthority {
             Ok(mother_time),
         )
     }
+}
+
+fn governed_peers(ledger: &JsonlObservationLedger) -> std::result::Result<GovernedPeers, String> {
+    let replay = ledger
+        .verified_replay()
+        .map_err(|error| error.to_string())?;
+    replay
+        .state
+        .passkey_admin
+        .as_ref()
+        .map(|passkey| passkey.runtime.peers.clone())
+        .ok_or_else(|| "ledger is not passkey governed".to_owned())
 }
 
 fn projected_authority(
@@ -423,6 +441,9 @@ impl ResidentLedgerWriter {
                     ResidentLedgerCommand::ProjectedAuthority { ack, .. } => {
                         let _ = ack.send(Err("injected resident writer loss".into()));
                     }
+                    ResidentLedgerCommand::GovernedPeers { ack } => {
+                        let _ = ack.send(Err("injected resident writer loss".into()));
+                    }
                     ResidentLedgerCommand::Shutdown(ack) => {
                         let _ = ack.send(());
                         break;
@@ -496,6 +517,9 @@ impl ResidentLedgerWriter {
                         let _ = ack.send(Err("scripted authority writer".into()));
                     }
                     ResidentLedgerCommand::ProjectedAuthority { ack, .. } => {
+                        let _ = ack.send(Err("scripted authority writer".into()));
+                    }
+                    ResidentLedgerCommand::GovernedPeers { ack } => {
                         let _ = ack.send(Err("scripted authority writer".into()));
                     }
                     ResidentLedgerCommand::Shutdown(ack) => {
@@ -674,6 +698,9 @@ impl ResidentLedgerWriter {
                     }
                     ResidentLedgerCommand::ProjectedAuthority { state_path, ack } => {
                         let _ = ack.send(projected_authority(&ledger, &state_path));
+                    }
+                    ResidentLedgerCommand::GovernedPeers { ack } => {
+                        let _ = ack.send(governed_peers(&ledger));
                     }
                     ResidentLedgerCommand::FinalizeStartup {
                         state_path,
@@ -860,6 +887,22 @@ impl ResidentLedgerWriter {
             .context("send projected authority read to resident ledger writer")?;
         rx.await
             .context("receive projected authority read")?
+            .map_err(anyhow::Error::msg)
+    }
+
+    /// Governed peers from the writer's verified replay; fails closed when the
+    /// writer is fenced or the ledger is not governed.
+    pub(crate) async fn governed_peers(&self) -> Result<GovernedPeers> {
+        if self.is_fenced() {
+            bail!("resident observation writer is fenced");
+        }
+        let (ack, rx) = tokio::sync::oneshot::channel();
+        self.sender
+            .send(ResidentLedgerCommand::GovernedPeers { ack })
+            .await
+            .context("send governed peer read to resident ledger writer")?;
+        rx.await
+            .context("receive governed peer read")?
             .map_err(anyhow::Error::msg)
     }
 

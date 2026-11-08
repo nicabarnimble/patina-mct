@@ -819,6 +819,7 @@ where
         }
     });
     let admin_config_path = config.config_path.clone();
+    let binding_ledger = governed.then(|| ledger.clone());
     let admin_state_path = config.state_path.clone();
     let observation_sink = resident_iroh_observation_sink(ledger.clone());
     let serve_result = {
@@ -841,10 +842,15 @@ where
                         let state_path = state_path.clone();
                         async move {
                             let reply = owner.administer(request).await;
-                            if matches!(reply, mct_iroh::MctIrohAdminReply::Completed { .. })
-                                && let Err(error) =
-                                    project_governed_config_from(&owner, &config_path, &state_path)
-                                        .await
+                            // Indeterminate can follow a committed change, so it
+                            // publishes too; the publisher reads the current head.
+                            if matches!(
+                                reply,
+                                mct_iroh::MctIrohAdminReply::Completed { .. }
+                                    | mct_iroh::MctIrohAdminReply::Indeterminate
+                            ) && let Err(error) =
+                                project_governed_config_from(&owner, &config_path, &state_path)
+                                    .await
                             {
                                 eprintln!("governed config projection failed: {error:#}");
                             }
@@ -857,7 +863,8 @@ where
             current_timestamp,
             move || {
                 let config_path = config_path.clone();
-                async move { load_peer_bindings_for_iroh(config_path).await }
+                let ledger = binding_ledger.clone();
+                async move { load_peer_bindings_for_iroh(config_path, ledger).await }
             },
             move |request, _evaluation, inline_payload| {
                 let execution_paths = execution_paths.clone();
@@ -1076,13 +1083,32 @@ async fn wait_for_resident_control_bound(
     }
 }
 
+/// Inbound peer bindings for hello and call evaluation. On a governed Mother
+/// the writer's verified replay decides which `config.json` peers count, so a
+/// held, failed or skipped publication of that file cannot admit a peer the
+/// ledger revoked. A ledger read failure refuses the connection.
 pub(super) async fn load_peer_bindings_for_iroh(
     path: PathBuf,
+    governed: Option<ResidentLedgerWriter>,
 ) -> mct_iroh::MotherIrohEndpointResult<MctPeerAuthoritySnapshot> {
+    let ledger_peers = match governed {
+        Some(ledger) => Some(ledger.governed_peers().await.map_err(|source| {
+            MotherIrohEndpointError::ProtocolProvider {
+                action: "read governed peers",
+                source: Box::new(std::io::Error::other(source.to_string())),
+            }
+        })?),
+        None => None,
+    };
     tokio::task::spawn_blocking(move || {
         MctDaemonConfigStore::new(path)
             .load()
-            .and_then(|config| config.peer_authority_projection())
+            .and_then(|mut config| {
+                if let Some(peers) = &ledger_peers {
+                    mct_daemon::retain_peers_named_by_ledger(&mut config, peers);
+                }
+                config.peer_authority_projection()
+            })
     })
     .await
     .map_err(|source| MotherIrohEndpointError::ProtocolProvider {
@@ -1164,19 +1190,25 @@ pub(super) fn resident_observations_for_served_protocol(
     Vec::new()
 }
 
+/// One governed publication at a time. Each reads the writer's current head
+/// while it holds this, so the last publication to finish always carries the
+/// newest state; an older snapshot can no longer be written after a newer one.
+static GOVERNED_PUBLICATION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Writes governed approvals and peers into `config.json` for the resident
-/// readers that use it; execution re-checks every peer against the ledger.
+/// readers that use it. Inbound bindings and execution snapshots re-check every
+/// peer against the ledger, so this copy decides no admission.
 async fn project_governed_config_from(
     ledger: &ResidentLedgerWriter,
     config_path: &Path,
     state_path: &Path,
 ) -> Result<()> {
+    let _publication = GOVERNED_PUBLICATION.lock().await;
     let projected = ledger
         .projected_authority(state_path.to_path_buf())
         .await
         .map_err(|error| anyhow::anyhow!(error))?;
-    #[cfg(feature = "nic131-witness")]
-    let nic131_generation = projected
+    let generation = projected
         .replay
         .current_authority
         .as_ref()
@@ -1187,23 +1219,36 @@ async fn project_governed_config_from(
         .passkey_admin
         .context("governed ledger lost its passkey state")?
         .runtime;
-    // The witness gate returns early so the default build keeps the original tail.
-    #[cfg(feature = "nic131-witness")]
-    #[allow(clippy::needless_return)]
-    {
-        let span = super::nic131_gate::enter(nic131_generation, &runtime);
-        let result = if span.injected_write_failure() {
-            Err(anyhow::anyhow!(
-                "nic131-witness injected config publication write failure"
-            ))
-        } else {
-            mct_daemon::project_governed_config(config_path, &runtime)
-        };
-        span.exit(&result);
-        return result;
-    }
-    #[cfg(not(feature = "nic131-witness"))]
-    mct_daemon::project_governed_config(config_path, &runtime)
+    publish_governed_config(generation, config_path, &runtime)
+}
+
+#[cfg(not(feature = "nic131-witness"))]
+fn publish_governed_config(
+    _generation: Option<u64>,
+    config_path: &Path,
+    runtime: &mct_observation::GovernedRuntimeV1,
+) -> Result<()> {
+    mct_daemon::project_governed_config(config_path, runtime)
+}
+
+/// The same publication, wrapped by the witness gate: it records the span and
+/// can hold it or skip the write once. Compiled only with `nic131-witness`.
+#[cfg(feature = "nic131-witness")]
+fn publish_governed_config(
+    generation: Option<u64>,
+    config_path: &Path,
+    runtime: &mct_observation::GovernedRuntimeV1,
+) -> Result<()> {
+    let span = super::nic131_gate::enter(generation, runtime);
+    let result = if span.injected_write_failure() {
+        Err(anyhow::anyhow!(
+            "nic131-witness injected config publication write failure"
+        ))
+    } else {
+        mct_daemon::project_governed_config(config_path, runtime)
+    };
+    span.exit(&result);
+    result
 }
 
 #[cfg(test)]

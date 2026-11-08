@@ -10,8 +10,8 @@ mod governed_runtime;
 mod nic131_witness_clock;
 pub use governed_runtime::{
     GOVERNED_DIRECTORY_READ_ACTION, GOVERNED_DIRECTORY_READ_TOY_ID, GOVERNED_ROUTES,
-    GovernedChildStateV1, GovernedChildV1, GovernedPeerV1, GovernedRuntimeV1,
-    directory_read_contract, governed_route_scope,
+    GovernedChildStateV1, GovernedChildV1, GovernedOutboundProofV1, GovernedPeerV1,
+    GovernedRuntimeV1, directory_read_contract, governed_route_scope,
 };
 mod passkey_admin;
 pub use passkey_admin::{

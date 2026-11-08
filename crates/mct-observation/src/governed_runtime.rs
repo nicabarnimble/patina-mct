@@ -67,6 +67,23 @@ pub struct GovernedPeerV1 {
     pub state: GovernedChildStateV1,
     pub decided_by: String,
     pub decided_at: Timestamp,
+    /// The receiving Mother's own signed binding for this Mother, recorded by a
+    /// signed command. It lets this Mother call that peer; the peer verifies
+    /// it, and this Mother verifies it before routing. It grants nothing here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outbound_proof: Option<GovernedOutboundProofV1>,
+}
+
+/// A binding the peer issued for this Mother: the peer's binding id, policy
+/// revision and expiry, and the peer's signature over them. Only the peer can
+/// issue it; this ledger records which one a person chose to present.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GovernedOutboundProofV1 {
+    pub binding_id: PeerBindingId,
+    pub policy_revision: u64,
+    pub signature_ref: String,
+    pub expires_at: Timestamp,
 }
 
 #[derive(Deserialize)]
@@ -81,6 +98,8 @@ struct PeerAddBodyV1 {
     policy_revision: u64,
     #[serde(default)]
     expires_at: Option<Timestamp>,
+    #[serde(default)]
+    outbound_proof: Option<GovernedOutboundProofV1>,
 }
 
 #[derive(Deserialize)]
@@ -324,6 +343,16 @@ pub(crate) fn apply_governed_command(
             if &expires_at <= decided_at || b.policy_revision == 0 {
                 return Err("peer binding needs a future expiry and a policy revision".into());
             }
+            if let Some(proof) = &b.outbound_proof
+                && (proof.signature_ref.trim().is_empty()
+                    || proof.policy_revision == 0
+                    || &proof.expires_at <= decided_at)
+            {
+                return Err(
+                    "outbound proof needs a signature, a policy revision and a future expiry"
+                        .into(),
+                );
+            }
             next.peers.insert(
                 b.peer_node_id.to_string(),
                 GovernedPeerV1 {
@@ -337,6 +366,7 @@ pub(crate) fn apply_governed_command(
                     state: GovernedChildStateV1::Approved,
                     decided_by,
                     decided_at: decided_at.clone(),
+                    outbound_proof: b.outbound_proof,
                 },
             );
         }

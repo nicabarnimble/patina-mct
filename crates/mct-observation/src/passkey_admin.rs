@@ -397,19 +397,10 @@ impl JsonlObservationLedger {
         effect: impl FnOnce(&str) -> Result<T>,
     ) -> Result<T> {
         #[cfg(feature = "nic131-witness")]
-        {
-            return self.execute_passkey_command_with_clock(
-                request,
-                route,
-                scope,
-                command_clock,
-                effect,
-            );
-        }
+        let clock = command_clock;
         #[cfg(not(feature = "nic131-witness"))]
-        {
-            self.execute_passkey_command_with_clock(request, route, scope, now, effect)
-        }
+        let clock = now;
+        self.execute_passkey_command_with_clock(request, route, scope, clock, effect)
     }
     pub(super) fn execute_passkey_command_with_clock<T>(
         &mut self,

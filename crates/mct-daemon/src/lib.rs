@@ -70,7 +70,7 @@ pub use authority_snapshot::{
     local_execution_authority_snapshot, local_execution_authority_snapshot_at,
     local_execution_authority_snapshot_from_proven,
     local_execution_authority_snapshot_from_verified, project_governed_config,
-    prove_authority_projection,
+    prove_authority_projection, retain_peers_named_by_ledger,
 };
 pub use blob_store::{
     MCT_BLOB_MAX_BYTES, MctLocalBlobStore, MctLocalBlobStoreError, content_addressed_blob_handle,

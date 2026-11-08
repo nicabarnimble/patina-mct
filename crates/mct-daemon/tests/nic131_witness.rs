@@ -535,6 +535,7 @@ fn runtime_peer(name: &str, state: GovernedChildStateV1) -> GovernedRuntimeV1 {
         state,
         decided_by: "ops".into(),
         decided_at: Timestamp::new(plus_secs(-30)).unwrap(),
+        outbound_proof: None,
     };
     runtime.peers.insert(name.to_owned(), peer);
     runtime

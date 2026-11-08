@@ -21,14 +21,25 @@ person or hardware and stay pending: Doug's live 1Password tap, and the Pi run.
   | `/children/revoke` | `revoke_child` | `child_name` |
   | `/toys/grant-directory-read` | `watch_grant` | `grant_id` (never reused), `child_name`, `canonical_root` (`file:///abs`), `expires_at` (mandatory), optional `caller_node_id` |
   | `/toys/revoke` | `watch_revoke` | `grant_id` |
-  | `/peers/add` | `peer_add` | `peer_node_id`, `binding_id`, `endpoint_id`, `vision_id`, `policy_revision`, `expires_at` (mandatory), optional `ticket` |
+  | `/peers/add` | `peer_add` | `peer_node_id`, `binding_id`, `endpoint_id`, `vision_id`, `policy_revision`, `expires_at` (mandatory), optional `ticket`, optional `outbound_proof` |
   | `/peers/revoke` | `peer_revoke` | `peer_node_id` |
 
-- At boot, and after each completed governed admin command, approvals and peers
-  are projected into `config.json` for the hello, publication and forwarding
-  readers. The execution snapshot keeps only peers the ledger names identically.
-  Those readers trust the projection, the same as other same-UID host state
-  (see `docs/SECURITY-BOUNDARIES.md`).
+- At boot, and after each governed admin command that completed or replied
+  Indeterminate, approvals and peers are projected into `config.json`. One
+  projection runs at a time, and each reads the ledger head while it runs, so
+  an older snapshot cannot be written after a newer one.
+- `config.json` decides no peer admission. Inbound hello and call evaluation,
+  the execution snapshot, and outbound routing keep only the peers the ledger
+  names identically, and take each peer's outbound proof from the ledger. A
+  held, failed or skipped projection cannot admit a peer the ledger revoked.
+- To call a governed peer, a Mother needs that peer's own signed binding for it.
+  The receiving Mother issues it: `mct-daemon peers list --json --config <its
+  config>` shows `binding_id`, `policy_revision`, `binding_signature_ref` and
+  `expires_at` for the caller. A person on the calling Mother records it with
+  a signed `/peers/add` whose `outbound_proof` is `{binding_id, policy_revision,
+  signature_ref, expires_at}`. The caller verifies the signature against the
+  peer's endpoint before routing, and the receiver verifies it again at hello.
+  Revocation by either ledger stops the call.
 - Every Unix-socket mutation (`governed_unix_socket_mutation_refused`) and every
   offline mutation (`governed_offline_mutation_refused`) is refused before any
   effect, and the ledger bytes are unchanged.

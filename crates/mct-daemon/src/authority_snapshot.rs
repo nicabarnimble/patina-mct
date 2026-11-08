@@ -247,16 +247,42 @@ fn governed_peer_matches(
         && entry.binding_state == governed_binding_state(peer)
 }
 
+fn governed_outbound_binding(
+    peer: &mct_observation::GovernedPeerV1,
+) -> Option<crate::MctOutboundPeerBindingPresentation> {
+    peer.outbound_proof
+        .as_ref()
+        .map(|proof| crate::MctOutboundPeerBindingPresentation {
+            binding_id: proof.binding_id.clone(),
+            policy_revision: proof.policy_revision,
+            signature_ref: proof.signature_ref.clone(),
+            expires_at: proof.expires_at.clone(),
+        })
+}
+
+/// Keeps only the `config.json` peers the governed ledger names identically,
+/// and takes each kept peer's outbound proof from the ledger. Every governed
+/// reader that decides who may connect or be called uses this, so a stale or
+/// failed publication of `config.json` cannot admit a peer the ledger revoked.
+pub fn retain_peers_named_by_ledger(
+    config: &mut crate::MctDaemonConfig,
+    peers: &std::collections::BTreeMap<String, mct_observation::GovernedPeerV1>,
+) {
+    config.peers.retain(|node, entry| {
+        peers
+            .get(node)
+            .is_some_and(|peer| governed_peer_matches(entry, peer))
+    });
+    for (node, entry) in &mut config.peers {
+        entry.outbound_binding = peers.get(node).and_then(governed_outbound_binding);
+    }
+}
+
 fn apply_governed_runtime(config: &mut crate::MctDaemonConfig, runtime: &GovernedRuntimeV1) {
     let (approvals, assignments) = governed_child_records(runtime);
     config.child_approvals = approvals;
     config.child_assignments = assignments;
-    config.peers.retain(|node, entry| {
-        runtime
-            .peers
-            .get(node)
-            .is_some_and(|peer| governed_peer_matches(entry, peer))
-    });
+    retain_peers_named_by_ledger(config, &runtime.peers);
 }
 
 /// Rewrites `config.json` approvals and peers from the governed ledger. Other
@@ -284,7 +310,7 @@ pub fn project_governed_config(
                 .map(serde_json::from_value)
                 .transpose()?,
             binding_signature_ref: None,
-            outbound_binding: None,
+            outbound_binding: governed_outbound_binding(peer),
             binding_state: governed_binding_state(peer),
             policy_revision: peer.policy_revision,
             expires_at: peer.expires_at.clone(),
@@ -1032,6 +1058,7 @@ mod governed_peer_tests {
             state: GovernedChildStateV1::Approved,
             decided_by: "ed25519:ops".into(),
             decided_at: ts("2026-11-07T00:00:00Z"),
+            outbound_proof: None,
         };
         let entry = |node: &str, expires: &str| crate::MctPeerAddressBookEntry {
             peer_node_id: mct_kernel::MctNodeId::new(node).unwrap(),
