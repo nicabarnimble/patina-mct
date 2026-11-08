@@ -16,6 +16,9 @@ pub struct PasskeyAdminFactV1 {
 pub struct PasskeyAdminCanonicalV1 {
     pub genesis: PasskeyAdminFactV1,
     pub state: PasskeyAdminStateV1,
+    /// Child-runtime authority written by governed commands.
+    #[serde(default, skip_serializing_if = "crate::GovernedRuntimeV1::is_empty")]
+    pub runtime: crate::GovernedRuntimeV1,
 }
 
 /// Host-only setup assertion, not deserializable request data. The producer must
@@ -88,6 +91,10 @@ fn digest(s: &str) -> bool {
 fn now() -> Timestamp {
     Timestamp::new(jiff::Timestamp::now().to_string()).expect("system time")
 }
+#[cfg(feature = "nic131-witness")]
+fn command_clock() -> Timestamp {
+    super::nic131_witness_clock::pop().unwrap_or_else(now)
+}
 impl PasskeyAdminFactV1 {
     fn id(&self) -> Result<String> {
         Ok(format!(
@@ -152,14 +159,20 @@ fn transition(
         {
             return Err(denied("stale or wrong authority snapshot"));
         }
+        let state =
+            evaluate_passkey_admin_transition(Some(&prior.state), &fact.request, &fact.decided_at)
+                .map_err(denied)?;
+        let runtime = crate::governed_runtime::apply_governed_command(
+            &prior.runtime,
+            &state.mother_node_id,
+            &fact.request,
+            &fact.decided_at,
+        )
+        .map_err(denied)?;
         return Ok(PasskeyAdminCanonicalV1 {
             genesis: prior.genesis.clone(),
-            state: evaluate_passkey_admin_transition(
-                Some(&prior.state),
-                &fact.request,
-                &fact.decided_at,
-            )
-            .map_err(denied)?,
+            state,
+            runtime,
         });
     }
     let PasskeyAdminActionV1::Bootstrap { inventory_hash, .. } = &i.action else {
@@ -184,6 +197,7 @@ fn transition(
         genesis: fact.clone(),
         state: evaluate_passkey_admin_transition(None, &fact.request, &fact.decided_at)
             .map_err(denied)?,
+        runtime: crate::GovernedRuntimeV1::default(),
     })
 }
 pub(super) fn replay_fact(
@@ -219,6 +233,39 @@ pub(super) fn replay_fact(
     replay.state.passkey_admin = Some(Box::new(next));
     replay.canonical_fact_count += 1;
     Ok(())
+}
+
+/// True when the ledger at `path` was born passkey-rooted (D-58). Replay requires
+/// passkey genesis to be the first physical frame, so the first line decides.
+pub fn ledger_is_passkey_governed(path: &Path) -> Result<bool> {
+    use std::io::BufRead as _;
+    let file = match std::fs::File::open(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        file => file.map_err(|source| ObservationLedgerError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?,
+    };
+    let mut first = String::new();
+    std::io::BufReader::new(file)
+        .read_line(&mut first)
+        .map_err(|source| ObservationLedgerError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    if first.trim().is_empty() {
+        return Ok(false);
+    }
+    let entry: MctObservationLedgerEntry =
+        serde_json::from_str(first.trim()).map_err(|_| denied("unreadable first ledger frame"))?;
+    Ok(entry
+        .observation
+        .detail_ref
+        .as_deref()
+        .is_some_and(|detail| {
+            detail.starts_with(AUTHORITY_FACT_DETAIL_PREFIX)
+                && detail.contains("\"fact_kind\":\"passkey_admin\"")
+        }))
 }
 
 impl JsonlObservationLedger {
@@ -349,7 +396,11 @@ impl JsonlObservationLedger {
         scope: AdminKeyScopeV1,
         effect: impl FnOnce(&str) -> Result<T>,
     ) -> Result<T> {
-        self.execute_passkey_command_with_clock(request, route, scope, now, effect)
+        #[cfg(feature = "nic131-witness")]
+        let clock = command_clock;
+        #[cfg(not(feature = "nic131-witness"))]
+        let clock = now;
+        self.execute_passkey_command_with_clock(request, route, scope, clock, effect)
     }
     pub(super) fn execute_passkey_command_with_clock<T>(
         &mut self,

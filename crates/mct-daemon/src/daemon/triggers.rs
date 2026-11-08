@@ -432,6 +432,7 @@ pub(super) fn execute_offline_trigger_mutation(
     path: &str,
     body: &[u8],
 ) -> Result<CallTriggerAuthority> {
+    super::control::refuse_governed_offline_mutation(ledger_path)?;
     let mut ledger = JsonlObservationLedger::open(ledger_path, "ledger-local", "local-mct")
         .with_context(|| {
             format!(

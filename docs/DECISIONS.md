@@ -491,7 +491,7 @@ All six were locked on 2026-10-14 in the admin-keys design. Full text:
 ### D-40 Child-start ledger fact: option D
 
 - **Date:** 2026-10-18.
-- **Status:** **proposed.**
+- **Status:** **built** as an equivalent (unkeyed dispatch fence), see D-60.
 - **Decision:** the ledger writer itself admits a local Child launch and
   appends a `ChildInvoked` BeforeEffect fact before launch; a writer-level guard
   refuses a second admission of the same `call_id`; recovery becomes
@@ -703,3 +703,41 @@ into the new passkey profile.
   permitting legacy roots to mint new-profile authority.
 - **Proof:** deterministic automated tests and repository quality gates. No new
   temporary receipt-hash tables or long evidence essays.
+
+### D-59 ToyGrant expiry is mandatory
+
+- **Owner decision:** 2026-11-01, recorded in [design/board-toygrant.md](design/board-toygrant.md#decided-policy);
+  enforced by [NIC-125](https://linear.app/nicabar/issue/NIC-125) under the frozen NIC-123 C2 check.
+- **Status:** built.
+- **Decision:** a ToyGrant with no `expires_at` denies with `MissingExpiry`. A filesystem
+  (`wasi:filesystem/*`) grant with no `resource_id` denies with `MissingResource`. Both are
+  decided in the kernel before any token or effect, on the call and snapshot paths alike.
+- **Lifetime:** independent of the issuing key. `toys authorize-slate` and `authorize-secret`
+  default to 30 days and accept `--expires-at`; the wire request always carries the exact value.
+- **Compatibility:** existing open-ended grants replay unchanged and deny at evaluation (D-02).
+  Re-issue them with an expiry. Nothing is rewritten in the ledger.
+
+### D-60 Passkey-governed Mother runs Children; D-40 built as an unkeyed fence
+
+- **Owner direction:** Doug approved NIC-126 (Piece 3 of NIC-123).
+- **Status:** built. One resident process boots on a passkey ledger and serves
+  Child calls and `mct/admin/1`. Artifact staging and peer add/revoke are
+  governed commands. Doug's live tap and the Pi run are pending
+  ([done/governed-profile.md](done/governed-profile.md)).
+- **Decision:** a passkey-rooted ledger is the governed profile. Signed commands
+  (`/artifacts/stage`, `/children/approve`, `/children/revoke`,
+  `/toys/grant-directory-read`, `/toys/revoke`, `/peers/add`, `/peers/revoke`)
+  are the only Child-runtime authority. Replay applies each ledger route's
+  body, and staging runs only after its admission fact is committed. The
+  execution snapshot is built from the verified replay. `config.json` is a
+  projection, and a peer survives only when the ledger names it identically. Every Unix-socket and offline
+  mutation is refused before any effect. This partly builds D-08 for that profile.
+- **D-40:** built as an equivalent of option D. Unkeyed calls take the
+  writer-admitted BeforeEffect dispatch reservation under their call ID, so lost
+  SQLite history cannot launch a call ID twice. A repeat replays the recorded
+  reply or is refused. An unkeyed call whose deadline outlives the 12-minute
+  fence is refused (`UnkeyedDeadlineBeyondFence`), so every retry is fenced or
+  expired. This 12-minute cap is a known limitation pending Doug's decision,
+  not a ratified policy. The reservation precedes routing, so a crash before launch settles
+  as interrupted, never as a second run.
+- **Source:** [done/governed-profile.md](done/governed-profile.md).
