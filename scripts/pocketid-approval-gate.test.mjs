@@ -196,6 +196,7 @@ test('full gate login keeps OIDC session separate from one-use queue capability'
     if (!gate.listening) await once(gate, 'listening');
     const host = `approval.example.test:${gatePort}`;
     assert.equal((await httpsCall(gatePort, host, '/')).status, 302);
+    assert.equal((await httpsCall(gatePort, host, '/approve/')).status, 302);
     const login = await httpsCall(gatePort, host, '/login');
     assert.equal(login.status, 302);
     const stateCookie = cookieValue(login.headers, '__Host-mct-oidc-state');
@@ -210,6 +211,9 @@ test('full gate login keeps OIDC session separate from one-use queue capability'
     assert.equal(authenticated.status, 200);
     const identity = JSON.parse(authenticated.body);
     assert.equal(identity.subject, subject);
+    const approvalPage = await httpsCall(gatePort, host, '/approve/', {cookie: sessionCookie});
+    assert.equal(approvalPage.status, 200);
+    assert.match(approvalPage.body, /MCT root approval/);
 
     const noQueue = await httpsCall(gatePort, host, '/api/next', {method: 'POST', cookie: sessionCookie,
       origin: approvalOrigin, csrf: identity.csrf, body: {}});
