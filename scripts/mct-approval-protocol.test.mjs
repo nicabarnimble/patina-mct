@@ -72,6 +72,18 @@ test('expired proof is refused and consumes the code', () => {
   assert.equal(verifier.consumed, true);
 });
 
+test('proof result remains bound to the expected subject and request', () => {
+  for (const [name, changed] of [
+    ['subject', {subject: 'another-account'}],
+    ['request', {request_id: 'another-request'}],
+  ]) {
+    const verifier = new ProofResultVerifier(request, wikiKeys.publicKey);
+    const signed = signEnvelope(result(changed), wikiKeys.privateKey);
+    assert.deepEqual(verifier.accept(signed, 1_010), {phase: 'refused', reason: 'mismatch'}, name);
+    assert.equal(verifier.consumed, true, name);
+  }
+});
+
 test('valid proof is accepted once and replay is refused', () => {
   const verifier = new ProofResultVerifier(request, wikiKeys.publicKey);
   const allowed = signEnvelope(result(), wikiKeys.privateKey);

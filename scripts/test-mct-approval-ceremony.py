@@ -18,10 +18,35 @@ def grant_request():
         "asker": "Unraid Grok",
         "mother": "unraid-mother",
         "permissions": [
-            {"name": "Read service logs", "description": "See what services on this Mother have logged"},
-            {"name": "Restart containers", "description": "Stop and start containers. Nothing else"},
+            {"name": "Revoke day key", "description": "End access for day"},
         ],
-        "grant_ends_at": "2026-11-10T11:00:00Z",
+        "grant_ends_at": "On approval",
+    }
+
+
+def issue_request(scopes=("status",), grant_end="2026-11-09T11:00:00Z"):
+    labels = {
+        "status": {"name": "Read Mother status", "description": "Inspect this Mother's governed status"},
+        "key_manage": {"name": "Manage day keys", "description": "Issue or revoke bounded day keys"},
+    }
+    return {
+        "kind": "grant",
+        "asker": "Unraid Grok",
+        "mother": "unraid-mother",
+        "permissions": [labels[scope] for scope in scopes],
+        "grant_ends_at": grant_end,
+    }
+
+
+def bootstrap_request():
+    return {
+        "kind": "grant",
+        "asker": "Unraid Grok",
+        "mother": "unraid-mother",
+        "permissions": [
+            {"name": "Establish passkey administration", "description": "Make this passkey the trusted Mother administrator"},
+        ],
+        "grant_ends_at": "On approval",
     }
 
 
@@ -38,7 +63,7 @@ def proof_request():
     }
 
 
-def prepared():
+def prepared(action=None):
     return {
         "root": {
             "credential_id": "AQID",
@@ -56,7 +81,7 @@ def prepared():
             "nonce": "a" * 64,
             "issued_at": "2026-11-09T10:00:00Z",
             "expires_at": "2026-11-09T10:05:00Z",
-            "action": {"action": "revoke_day_key", "grant_id": "day"},
+            "action": action or {"action": "revoke_day_key", "grant_id": "day"},
         },
     }
 
@@ -97,6 +122,31 @@ class CeremonyAcceptanceTests(unittest.TestCase):
         self.assertIsNone(state["prepared"])
         self.assertFalse((self.directory / (job["id"] + ".json")).exists())
 
+    def test_queue_session_cannot_select_another_page(self):
+        first = self.enqueue(proof_request())
+        second = self.enqueue(proof_request())
+        first_session = self.broker.claim(first["token"], "nicabar")
+        second_session = self.broker.claim(second["token"], "nicabar")
+        with self.assertRaises(ValueError):
+            self.broker.page_state(first_session["cookie"], second_session["page_id"])
+
+    def test_publish_rejects_all_wysiwys_mismatches(self):
+        issue_24h = {"action": "issue_day_key", "grant_id": "day-new",
+                     "public_key_sec1": "04" + "22" * 64,
+                     "scopes": ["status", "key_manage"],
+                     "expires_at": "2026-11-10T10:00:00Z"}
+        mismatches = [
+            (issue_request(("status",), "2026-11-09T11:00:00Z"), prepared(issue_24h)),
+            (grant_request(), prepared(issue_24h)),
+            (bootstrap_request(), prepared({"action": "revoke_day_key", "grant_id": "day"})),
+        ]
+        for displayed, exact in mismatches:
+            with self.subTest(displayed=displayed["permissions"][0]["name"]):
+                job = self.enqueue(displayed)
+                self.broker.claim(job["token"], "nicabar")
+                with self.assertRaisesRegex(ValueError, "displayed request"):
+                    self.broker.cli({"op": "publish", "id": job["id"], "prepared": exact})
+
     def test_tampered_grant_is_refused_and_consumed(self):
         job = self.enqueue(grant_request())
         session = self.broker.claim(job["token"], "nicabar")
@@ -109,6 +159,17 @@ class CeremonyAcceptanceTests(unittest.TestCase):
         self.assertTrue(result["consumed"])
         with self.assertRaises(ValueError):
             self.broker.complete(session["cookie"], session["page_id"], assertion(exact))
+
+    def test_wrong_credential_is_refused_and_consumed(self):
+        job = self.enqueue(grant_request())
+        session = self.broker.claim(job["token"], "nicabar")
+        exact = prepared()
+        self.broker.cli({"op": "publish", "id": job["id"], "prepared": exact})
+        changed = assertion(exact)
+        changed["proof"]["credential_id"] = "wrong-credential"
+        result = self.broker.complete(session["cookie"], session["page_id"], changed)
+        self.assertEqual(result["phase"], "refused")
+        self.assertTrue(result["consumed"])
 
     def test_valid_grant_is_accepted_exactly_once(self):
         job = self.enqueue(grant_request())

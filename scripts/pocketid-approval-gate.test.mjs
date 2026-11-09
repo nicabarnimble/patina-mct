@@ -90,7 +90,11 @@ function httpsCall(port, host, path, {method = 'GET', cookie = '', origin, csrf,
 const namedCookie = (headers, name) => (headers['set-cookie'] || []).find(value => value.startsWith(`${name}=`));
 const cookiePair = value => value?.split(';', 1)[0];
 
-test('direct QR scan survives OIDC and reveals details only after the bound callback', {timeout: 20000}, async () => {
+test('hosted gate refuses any noncanonical relying-party host', async () => {
+  await assert.rejects(run({MCT_APPROVAL_ORIGIN: 'https://not-mct-approval.example'}), /RP must be mct-approval\.nicabar\.org/);
+});
+
+test('direct QR scan survives only its bound OIDC callback and reveals details afterward', {timeout: 20000}, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'mct-pocketid-gate-'));
   const cert = join(directory, 'cert.pem'); const key = join(directory, 'key.pem');
   const secret = join(directory, 'client-secret'); const subjects = join(directory, 'subjects.json');
@@ -130,6 +134,7 @@ test('direct QR scan survives OIDC and reveals details only after the bound call
     });
     upstream.listen(upstreamPort, '127.0.0.1'); await once(upstream, 'listening');
     let callbackNonce = '';
+    let callbackSubject = subject;
     const fetcher = async (url, options = {}) => {
       const href = String(url);
       if (href.endsWith('/.well-known/openid-configuration')) return new Response(JSON.stringify({issuer,
@@ -137,7 +142,7 @@ test('direct QR scan survives OIDC and reveals details only after the bound call
       if (href === `${issuer}/token`) {
         assert.match(options.headers.Authorization, /^Basic /);
         const current = Math.floor(Date.now()/1000);
-        return new Response(JSON.stringify({id_token: token({nonce: callbackNonce, iat: current-1, exp: current+300})}), {status: 200});
+        return new Response(JSON.stringify({id_token: token({sub: callbackSubject, nonce: callbackNonce, iat: current-1, exp: current+300})}), {status: 200});
       }
       if (href === `${issuer}/jwks`) return new Response(JSON.stringify({keys: [jwk]}), {status: 200});
       throw new Error(`unexpected OIDC URL ${href}`);
@@ -152,20 +157,50 @@ test('direct QR scan survives OIDC and reveals details only after the bound call
     if (!gate.listening) await once(gate, 'listening');
     const host = `approval.example.test:${gatePort}`;
     const scanned = await httpsCall(gatePort, host, `/a/${capability}`);
-    assert.equal(scanned.status, 200); assert.doesNotMatch(scanned.body, /unraid-mother/); assert.match(scanned.body, /A bot is asking for your approval/);
+    assert.equal(scanned.status, 200); assert.equal(scanned.headers['referrer-policy'], 'no-referrer');
+    assert.doesNotMatch(scanned.body, /unraid-mother/); assert.match(scanned.body, /A bot is asking for your approval/);
     const linkHeader = namedCookie(scanned.headers, '__Host-mct-link');
     assert.match(linkHeader, /HttpOnly/); assert.match(linkHeader, /SameSite=Lax/);
     const linkCookie = cookiePair(linkHeader);
     const login = await httpsCall(gatePort, host, `/a/${capability}/login`, {cookie: linkCookie});
     const stateCookie = cookiePair(namedCookie(login.headers, '__Host-mct-oidc-state'));
     const authorization = new URL(login.headers.location); callbackNonce = authorization.searchParams.get('nonce');
-    const callback = await httpsCall(gatePort, host, `/oidc/callback?code=code-1&state=${encodeURIComponent(authorization.searchParams.get('state'))}`,
-      {cookie: `${linkCookie}; ${stateCookie}`});
+    const missingLink = await httpsCall(gatePort, host, `/oidc/callback?code=code-missing&state=${encodeURIComponent(authorization.searchParams.get('state'))}`,
+      {cookie: stateCookie});
+    assert.equal(missingLink.status, 400); assert.equal(claims, 0);
+
+    const mismatchLogin = await httpsCall(gatePort, host, `/a/${capability}/login`, {cookie: linkCookie});
+    const mismatchState = cookiePair(namedCookie(mismatchLogin.headers, '__Host-mct-oidc-state'));
+    const mismatchAuthorization = new URL(mismatchLogin.headers.location); callbackNonce = mismatchAuthorization.searchParams.get('nonce');
+    const otherScan = await httpsCall(gatePort, host, `/a/${capability}`);
+    const otherLinkCookie = cookiePair(namedCookie(otherScan.headers, '__Host-mct-link'));
+    const mismatchedLink = await httpsCall(gatePort, host, `/oidc/callback?code=code-mismatch&state=${encodeURIComponent(mismatchAuthorization.searchParams.get('state'))}`,
+      {cookie: `${otherLinkCookie}; ${mismatchState}`});
+    assert.equal(mismatchedLink.status, 400); assert.equal(claims, 0);
+
+    const finalLogin = await httpsCall(gatePort, host, `/a/${capability}/login`, {cookie: linkCookie});
+    const finalState = cookiePair(namedCookie(finalLogin.headers, '__Host-mct-oidc-state'));
+    const finalAuthorization = new URL(finalLogin.headers.location); callbackNonce = finalAuthorization.searchParams.get('nonce');
+    const callback = await httpsCall(gatePort, host, `/oidc/callback?code=code-1&state=${encodeURIComponent(finalAuthorization.searchParams.get('state'))}`,
+      {cookie: `${linkCookie}; ${finalState}`});
     assert.equal(callback.status, 302, callback.body); assert.equal(callback.headers.location, `/a/${capability}`); assert.equal(claims, 1);
     const sessionHeader = namedCookie(callback.headers, '__Host-mct-session');
     assert.match(sessionHeader, /HttpOnly/); assert.match(sessionHeader, /SameSite=Lax/);
     const returned = await httpsCall(gatePort, host, `/a/${capability}`, {cookie: `${linkCookie}; ${cookiePair(sessionHeader)}`});
     assert.equal(returned.status, 200); assert.match(returned.body, /You’re signed in/); assert.equal(claims, 1);
+
+    callbackSubject = 'not-allowed';
+    const wrongScan = await httpsCall(gatePort, host, `/a/${capability}`);
+    const wrongLinkCookie = cookiePair(namedCookie(wrongScan.headers, '__Host-mct-link'));
+    const wrongLogin = await httpsCall(gatePort, host, `/a/${capability}/login`, {cookie: wrongLinkCookie});
+    const wrongState = cookiePair(namedCookie(wrongLogin.headers, '__Host-mct-oidc-state'));
+    const wrongAuthorization = new URL(wrongLogin.headers.location); callbackNonce = wrongAuthorization.searchParams.get('nonce');
+    const wrongCallback = await httpsCall(gatePort, host, `/oidc/callback?code=wrong-account&state=${encodeURIComponent(wrongAuthorization.searchParams.get('state'))}`,
+      {cookie: `${wrongLinkCookie}; ${wrongState}`});
+    assert.equal(wrongCallback.status, 302); assert.equal(claims, 1);
+    const wrongReturned = await httpsCall(gatePort, host, `/a/${capability}`,
+      {cookie: `${wrongLinkCookie}; ${cookiePair(namedCookie(wrongCallback.headers, '__Host-mct-session'))}`});
+    assert.match(wrongReturned.body, /This request is for nicabar/); assert.equal(claims, 1);
   } finally {
     if (gate) { gate.close(); await once(gate, 'close'); }
     if (upstream) { upstream.close(); await once(upstream, 'close'); }
