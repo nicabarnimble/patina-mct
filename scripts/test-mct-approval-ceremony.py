@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from passkey_queue import Broker
+
+
+ORIGIN = "https://mct-approval.nicabar.org"
+
+
+def grant_request():
+    return {
+        "kind": "grant",
+        "asker": "Unraid Grok",
+        "mother": "unraid-mother",
+        "permissions": [
+            {"name": "Read service logs", "description": "See what services on this Mother have logged"},
+            {"name": "Restart containers", "description": "Stop and start containers. Nothing else"},
+        ],
+        "grant_ends_at": "2026-11-10T11:00:00Z",
+    }
+
+
+def proof_request():
+    return {
+        "kind": "proof",
+        "asker": "Unraid Grok",
+        "title": "The Example Handbook",
+        "site": "wiki.nicabar.org",
+        "path": "/library/example-handbook.pdf",
+        "why": "Checking the library release works for you (NIC-132)",
+        "expected_subject": "nicabar",
+        "required_group": "wiki-admin",
+    }
+
+
+def prepared():
+    return {
+        "root": {
+            "credential_id": "AQID",
+            "public_key_sec1": "04" + "11" * 64,
+            "rp_id": "mct-approval.nicabar.org",
+            "origin": ORIGIN,
+        },
+        "challenge": "challenge",
+        "intent": {
+            "mother_node_id": "unraid-mother",
+            "ledger_id": "ledger",
+            "epoch": "epoch",
+            "generation": 1,
+            "authority_observation_id": "authority",
+            "nonce": "a" * 64,
+            "issued_at": "2026-11-09T10:00:00Z",
+            "expires_at": "2026-11-09T10:05:00Z",
+            "action": {"action": "revoke_day_key", "grant_id": "day"},
+        },
+    }
+
+
+def assertion(value=None):
+    value = value or prepared()
+    return {
+        "intent": value["intent"],
+        "proof": {
+            "scheme": "webauthn-p256-day-key/v1",
+            "credential_id": value["root"]["credential_id"],
+            "authenticator_data": "auth",
+            "client_data_json": "client",
+            "signature": "signature",
+        },
+    }
+
+
+class CeremonyAcceptanceTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix=".mct-approval-test-", dir=Path.cwd())
+        self.directory = Path(self.temp.name)
+        self.directory.chmod(0o700)
+        self.broker = Broker(self.directory, ORIGIN)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def enqueue(self, request):
+        return self.broker.cli({"op": "enqueue", "request": request})
+
+    def test_login_grants_nothing(self):
+        job = self.enqueue(grant_request())
+        session = self.broker.claim(job["token"], "nicabar")
+        state = self.broker.page_state(session["cookie"], session["page_id"])
+        self.assertEqual(state["phase"], "opened")
+        self.assertFalse(state["consumed"])
+        self.assertIsNone(state["prepared"])
+        self.assertFalse((self.directory / (job["id"] + ".json")).exists())
+
+    def test_tampered_grant_is_refused_and_consumed(self):
+        job = self.enqueue(grant_request())
+        session = self.broker.claim(job["token"], "nicabar")
+        exact = prepared()
+        self.broker.cli({"op": "publish", "id": job["id"], "prepared": exact})
+        changed = assertion(exact)
+        changed["intent"] = dict(changed["intent"], generation=2)
+        result = self.broker.complete(session["cookie"], session["page_id"], changed)
+        self.assertEqual(result["phase"], "refused")
+        self.assertTrue(result["consumed"])
+        with self.assertRaises(ValueError):
+            self.broker.complete(session["cookie"], session["page_id"], assertion(exact))
+
+    def test_valid_grant_is_accepted_exactly_once(self):
+        job = self.enqueue(grant_request())
+        session = self.broker.claim(job["token"], "nicabar")
+        exact = prepared()
+        self.broker.cli({"op": "publish", "id": job["id"], "prepared": exact})
+        signed = self.broker.complete(session["cookie"], session["page_id"], assertion(exact))
+        self.assertEqual(signed["phase"], "signed")
+        self.assertTrue(signed["consumed"])
+        path = self.broker.cli({"op": "take", "id": job["id"]})["path"]
+        self.assertEqual(Path(path), self.directory / (job["id"] + ".json"))
+        settled = self.broker.cli({"op": "settle", "id": job["id"], "outcome": "approved"})
+        self.assertEqual(settled["phase"], "approved")
+        with self.assertRaises(ValueError):
+            self.broker.cli({"op": "take", "id": job["id"]})
+        with self.assertRaises(ValueError):
+            self.broker.complete(session["cookie"], session["page_id"], assertion(exact))
+
+    def test_failed_proof_consumes_code(self):
+        job = self.enqueue(proof_request())
+        session = self.broker.claim(job["token"], "nicabar")
+        failed = self.broker.proof_result(session["cookie"], session["page_id"], {
+            "outcome": "fail", "reason": "denied", "subject": "nicabar",
+            "path": proof_request()["path"], "nonce": job["nonce"],
+        })
+        self.assertEqual(failed["phase"], "failed")
+        self.assertTrue(failed["consumed"])
+        with self.assertRaises(ValueError):
+            self.broker.proof_result(session["cookie"], session["page_id"], {
+                "outcome": "pass", "reason": "ok", "subject": "nicabar",
+                "path": proof_request()["path"], "nonce": job["nonce"],
+            })
+
+    def test_expired_code_cannot_be_claimed(self):
+        job = self.enqueue(grant_request())
+        self.broker.jobs[job["id"]].deadline = time.time() - 1
+        status = self.broker.cli({"op": "status", "id": job["id"]})
+        self.assertEqual(status["phase"], "expired")
+        with self.assertRaises(ValueError):
+            self.broker.claim(job["token"], "nicabar")
+
+
+if __name__ == "__main__":
+    unittest.main()
