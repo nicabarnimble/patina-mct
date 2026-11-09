@@ -64,7 +64,7 @@ class CDP {
 
 for (const [forcedFallback, handoff] of [[false, false], [true, false], [false, true]]) {
 test(handoff ? 'CDP reauthentication cancels an owned registration before its replacement completes the same job'
-  : forcedFallback ? 'Chrome ceremony with a simulated provider refusal and one Approve click per root action'
+  : forcedFallback ? 'Chrome ceremony with explicit consent and one retry click per refused root action'
   : 'Chrome approvals-only genesis issue status revoke and fresh refusal across restart', {timeout: 120000}, async t => {
   const directory = await mkdtemp(join(tmpdir(), 'mct-approval-e2e-'));
   const session = join(directory, 'session');
@@ -105,7 +105,7 @@ test(handoff ? 'CDP reauthentication cancels an owned registration before its re
     await page('WebAuthn.addVirtualAuthenticator', {options: {protocol: 'ctap2', transport: 'internal',
       hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: presence}});
     await page('Page.addScriptToEvaluateOnNewDocument', {source: `
-      window.ceremonyMetrics = {gets: 0, creates: 0, gestures: [], approveClicks: 0, active: 0, aborted: 0, offers: []};
+      window.ceremonyMetrics = {gets: 0, creates: 0, gestures: [], approveClicks: 0, active: 0, aborted: 0, offers: [], reviews: []};
       const originalFetch = window.fetch.bind(window);
       window.fetch = async (...args) => {
         const response = await originalFetch(...args);
@@ -138,12 +138,27 @@ test(handoff ? 'CDP reauthentication cancels an owned registration before its re
         };
       }
       document.addEventListener('click', event => {
-        if (event.target.id === 'approve') ceremonyMetrics.approveClicks++;
+        if (event.target.id === 'approve') {
+          ceremonyMetrics.approveClicks++;
+          ceremonyMetrics.reviews.push(document.getElementById('review')?.textContent || '');
+        }
       });
     `});
     return page;
     }
     let page = await createPage(!handoff);
+    const clickApprove = async target => {
+      const button = await target('Runtime.evaluate', {expression: `(() => {
+        const b = document.getElementById('approve');
+        if (!b || b.hidden) return null;
+        const r = b.getBoundingClientRect(); return {x:r.x+r.width/2, y:r.y+r.height/2};
+      })()`, returnByValue: true});
+      if (!button.result.value) return false;
+      const point = button.result.value;
+      await target('Input.dispatchMouseEvent', {type:'mousePressed', button:'left', clickCount:1, ...point});
+      await target('Input.dispatchMouseEvent', {type:'mouseReleased', button:'left', clickCount:1, ...point});
+      return true;
+    };
     let oldPage;
     const runDirectory = join(directory, 'run');
     const binary = resolve(process.env.MCT_BINARY || 'target/debug/mct-daemon');
@@ -163,6 +178,7 @@ test(handoff ? 'CDP reauthentication cancels an owned registration before its re
     await page('Page.bringToFront');
     if (handoff) {
       await eventually(async () => {
+        await clickApprove(page);
         const result = await page('Runtime.evaluate', {expression: 'ceremonyMetrics.active', returnByValue: true});
         assert.equal(result.result.value, 1);
       });
@@ -176,18 +192,7 @@ test(handoff ? 'CDP reauthentication cancels an owned registration before its re
     await eventually(async () => {
       const result = await page('Runtime.evaluate', {expression: 'document.getElementById("state")?.textContent', returnByValue: true});
       if (demo.exitCode !== null && demo.exitCode !== 0) throw new Error(errors);
-      if (forcedFallback) {
-        const button = await page('Runtime.evaluate', {expression: `(() => {
-          const b = document.getElementById('approve');
-          if (!b || b.hidden) return null;
-          const r = b.getBoundingClientRect(); return {x:r.x+r.width/2, y:r.y+r.height/2};
-        })()`, returnByValue: true});
-        if (button.result.value) {
-          const point = button.result.value;
-          await page('Input.dispatchMouseEvent', {type:'mousePressed', button:'left', clickCount:1, ...point});
-          await page('Input.dispatchMouseEvent', {type:'mouseReleased', button:'left', clickCount:1, ...point});
-        }
-      }
+      await clickApprove(page);
       assert.match(output, /PASS full ceremony/, 'waiting for ceremony; page says ' + result.result.value);
     }, 75000);
     assert.equal(await finished, 0, errors);
@@ -200,6 +205,7 @@ test(handoff ? 'CDP reauthentication cancels an owned registration before its re
       const oldResult = await oldPage('Runtime.evaluate', {expression: 'JSON.stringify(ceremonyMetrics)', returnByValue: true});
       const oldMetrics = JSON.parse(oldResult.result.value);
       assert.equal(oldMetrics.creates, 1);
+      assert.equal(oldMetrics.approveClicks, 1);
       assert.equal(oldMetrics.aborted, 1);
       assert.equal(oldMetrics.active, 0);
       assert(oldMetrics.abortedAt <= metrics.firstStartedAt, 'replacement prompted before the old WebAuthn promise settled');
@@ -209,8 +215,16 @@ test(handoff ? 'CDP reauthentication cancels an owned registration before its re
     assert.equal(metrics.active, 0);
     assert.equal(metrics.gets, 3);
     assert.equal(metrics.creates, 1);
-    assert.equal(metrics.approveClicks, forcedFallback ? 3 : 0);
-    assert.deepEqual(metrics.gestures, [false, forcedFallback, forcedFallback, forcedFallback]);
+    assert.equal(metrics.approveClicks, forcedFallback ? 7 : 4);
+    assert.deepEqual(metrics.gestures, [true, true, true, true]);
+    const reviewedAssertions = metrics.reviews.filter(value => value.startsWith('{')).map(JSON.parse);
+    assert.equal(reviewedAssertions.length, forcedFallback ? 6 : 3);
+    for (const reviewed of reviewedAssertions) {
+      assert.equal(reviewed.pinned_root.origin, origin);
+      assert.equal(reviewed.pinned_root.rp_id, 'mct.localhost');
+      assert.match(reviewed.pinned_root.credential_id, /^[A-Za-z0-9_-]+$/);
+      assert.equal(typeof reviewed.intent.nonce, 'string');
+    }
     assert.equal(metrics.files, 0); assert.equal(metrics.signButtons, 0); assert.equal(cdp.fileChoosers, 0); assert.equal(cdp.downloads, 0);
     assert.equal(metrics.fragment, ''); assert.equal(metrics.cookie, '');
     const requests = [];
@@ -235,8 +249,8 @@ test(handoff ? 'CDP reauthentication cancels an owned registration before its re
         if (name.endsWith('.json') || name === 'resident.log') assert.equal((await stat(join(folder, name))).mode & 0o777, 0o600);
       }
     }
-    t.diagnostic(version.product + ': 3 root assertions, ' + metrics.approveClicks + ' Approve clicks, 0 file selections; '
-      + (forcedFallback ? 'simulated provider refusal, not a measured Chrome requirement' : 'no transient user activation'));
+    t.diagnostic(version.product + ': 3 root assertions, ' + metrics.approveClicks + ' explicit approval clicks, 0 file selections; '
+      + (forcedFallback ? 'simulated provider refusal adds one retry click per root action' : 'every WebAuthn request followed explicit review consent'));
     t.diagnostic('Private virtual-authenticator artifacts retained at ' + directory);
   } finally {
     if (cdp) cdp.close();

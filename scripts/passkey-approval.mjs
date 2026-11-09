@@ -2,11 +2,12 @@ import {registerRoot, signPrepared, expectedChallenge} from './passkey-admin.mjs
 const state = document.getElementById('state');
 const review = document.getElementById('review');
 const approve = document.getElementById('approve');
+const operator = document.getElementById('operator');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-let pageId = '';
+let pageId = '', csrf = '';
 async function api(operation, body = {}, keepalive = false) {
   const response = await fetch('/api/' + operation, {
-    method: 'POST', headers: {'Content-Type': 'application/json', 'X-MCT-Page': pageId},
+    method: 'POST', headers: {'Content-Type': 'application/json', 'X-MCT-Page': pageId, 'X-MCT-CSRF': csrf},
     body: JSON.stringify(body), credentials: 'same-origin', cache: 'no-store', keepalive,
     signal: AbortSignal.timeout(5000),
   });
@@ -51,7 +52,14 @@ async function ceremony(job) {
       await api('fail', binding);
       throw new Error('Prepared intent binding mismatch');
     }
-    review.textContent = JSON.stringify(job.prepared.intent, null, 2);
+    review.textContent = JSON.stringify({
+      pinned_root: {
+        credential_id: job.prepared.root.credential_id,
+        rp_id: job.prepared.root.rp_id,
+        origin: job.prepared.root.origin,
+      },
+      intent: job.prepared.intent,
+    }, null, 2);
   } else {
     review.textContent = 'Register a new root for ' + job.name + ' at ' + location.origin + '. Use your default browser with 1Password.';
   }
@@ -81,13 +89,14 @@ async function ceremony(job) {
     ? registerRoot(location.hostname, job.name, {signal}) : signPrepared(job.prepared, {signal});
   try {
     hidden();
-    state.textContent = 'Review the operation below. Waiting for the passkey provider.';
+    state.textContent = 'Review the operation below. Pocket ID login is not consent. Approve explicitly to request the pinned root credential.';
     await nextPaint(signal);
+    await approveOnce(signal);
     let result;
     try { result = await assertion(); }
     catch (error) {
       if (signal.aborted || error.name !== 'NotAllowedError') throw error;
-      state.textContent = 'The provider stopped automatic approval. Approve once to retry, or reopen the page later.';
+      state.textContent = 'The passkey provider refused or cancelled. Approve explicitly once to retry, or reopen the page later.';
       await approveOnce(signal);
       result = await assertion();
     }
@@ -118,6 +127,16 @@ async function ceremony(job) {
   }
 }
 async function run() {
+  const authenticated = await fetch('/api/auth', {credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(5000)});
+  const identity = authenticated.status === 404
+    ? {subject: 'local loopback queue (Pocket ID gate not active)', csrf: ''}
+    : await authenticated.json();
+  if ((!authenticated.ok && authenticated.status !== 404) || typeof identity.subject !== 'string' || !identity.subject ||
+      typeof identity.csrf !== 'string' || (authenticated.ok && !identity.csrf)) {
+    throw new Error('Invalid Pocket ID approval session');
+  }
+  operator.textContent = identity.subject;
+  csrf = identity.csrf;
   const token = location.hash.slice(1);
   history.replaceState(null, '', '/');
   if (!token) throw new Error('Open a fresh authenticated page through the CLI');

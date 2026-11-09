@@ -4,9 +4,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MCT root approval</title>
 <h1>MCT root approval</h1>
-<p>This page only returns assertions. The waiting CLI submits them; Mother verifies them.</p>
+<p>This page only returns assertions. Pocket ID grants page access; the waiting CLI submits, and Mother independently verifies the pinned root signature.</p>
+<p>Authenticated Pocket ID subject: <code id="operator">checking...</code></p>
 <p id="state">Authenticating this page...</p>
-<button id="approve" hidden>Approve</button>
+<button id="approve" hidden>Approve reviewed action</button>
 <pre id="review"></pre>
 <script type="module" src="/approval.mjs"></script>
 </html>

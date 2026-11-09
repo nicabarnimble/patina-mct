@@ -314,7 +314,7 @@ class BoundedHTTPServer(ThreadingHTTPServer):
 
 
 class Service:
-    def __init__(self, directory, origin, cert, key):
+    def __init__(self, directory, origin, cert, key, listen=None):
         self.broker = Broker(directory, origin)
         broker = self.broker
         assets = {"/": ("text/html", "passkey-approval.html"),
@@ -403,7 +403,11 @@ class Service:
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(cert, key)
         port = urlsplit(origin).port
-        self.http = BoundedHTTPServer(("127.0.0.1", 443 if port is None else port), Handler)
+        listen = listen or ("127.0.0.1", 443 if port is None else port)
+        if (not isinstance(listen, tuple) or len(listen) != 2 or listen[0] != "127.0.0.1"
+                or not isinstance(listen[1], int) or not 0 <= listen[1] <= 65535):
+            raise ValueError("approval queue listen address must be 127.0.0.1:port")
+        self.http = BoundedHTTPServer(listen, Handler)
         self.http.socket = context.wrap_socket(self.http.socket, server_side=True, do_handshake_on_connect=False)
         self.control = socket.socket(socket.AF_UNIX)
         self.socket_path = broker.directory / "control.sock"

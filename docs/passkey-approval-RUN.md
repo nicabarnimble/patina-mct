@@ -38,11 +38,13 @@ python3 scripts/passkey-approval-demo.py --session "$T/session" \
   --directory "$T/run" --binary "$T/mct-daemon"
 ```
 
-Keep the authenticated page focused. Approve registration, genesis, issuance,
-and revocation in 1Password. There are no files to choose, no downloads and no
-Sign button. The CDP virtual-authenticator test needed no Approve clicks.
-If the real browser/provider refuses the automatic request, the page offers
-**Approve** once for that action. This fallback does not bypass provider consent.
+Keep the authenticated page focused. Review each displayed operation and click
+**Approve reviewed action** before registration, genesis, issuance and revocation;
+then approve the selected credential in 1Password. There are no files to choose,
+no downloads and no separate Sign button. The CDP virtual-authenticator test
+requires these four explicit clicks. If the provider refuses or cancels, the page
+offers one additional explicit retry click for that action. Retry does not bypass
+provider consent.
 
 Expect PASS for registration, bootstrap, issue, day-status completed, revoke,
 revoked-status rejected, restarted-status rejected, and the full ceremony.
@@ -61,4 +63,5 @@ its original five-minute limit. Handoff does not extend it. On intent expiry or
 uncertain submission, stop and inspect. Do not rerun the demo against its existing
 run directory or automatically retry an uncertain action.
 Report any provider-selection, unlock, or extra confirmation UI separately from
-the three root approvals. Actual 1Password behavior is the point of this rerun.
+the four page-consent clicks and three root assertions. Actual 1Password behavior
+is the point of this rerun.

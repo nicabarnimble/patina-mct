@@ -91,13 +91,19 @@ then receives the private signed request and invokes bootstrap or `send-iroh`.
 The page never applies administration. Existing low-level CLI commands remain
 available; they do not implicitly connect to a broker.
 
-The CDP test driver completed the virtual-authenticator test with zero file
-selections, downloads, Sign clicks or Approve clicks, and no transient user
-activation. An injected provider-refusal test also passed with one Approve click
-per root action. That injected refusal does not establish a browser requirement.
+The approval page now requires one explicit **Approve reviewed action** click
+before registration and before each root assertion. The CDP virtual-authenticator
+test therefore expects four normal clicks (registration plus three root actions),
+zero file selections/downloads/Sign buttons, and active user consent for every
+WebAuthn request. An injected provider-refusal test adds one explicit retry click
+per root action. That injection does not establish a browser requirement.
 Actual 1Password provider selection, unlock and approval UI remain subject to
 Doug's live rerun. The page offers at most one explicit retry after NotAllowedError,
 which can mean refusal/cancellation as well as a gesture restriction.
+
+For a Pocket ID-authenticated hosted page, see
+[Pocket ID-gated MCT root approval](pocketid-approval.md). Pocket ID gates page
+access only; it never replaces the pinned WebAuthn root assertion.
 
 Only the private Unix socket can enqueue work. The HTTPS page exchanges a
 one-use fragment capability for an HttpOnly cookie and a separate page identity.
