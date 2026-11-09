@@ -32,17 +32,24 @@ def wait(session, job_id, phases):
     raise TimeoutError("ceremony wait expired")
 
 
+def open_page(session, print_url):
+    url = rpc(session, {"op": "open"})["url"]
+    if print_url:
+        print(url)
+        return
+    if sys.platform == "darwin":
+        opened = subprocess.run(["open", url], capture_output=True).returncode == 0
+    else:
+        opened = webbrowser.open(url)
+    if not opened:
+        raise RuntimeError("could not open the default browser")
+    print("Opened authenticated approval page. No action was submitted.")
+
+
 def execute(args):
     session = private_directory(args.session)
     if args.command == "open":
-        url = rpc(session, {"op": "open"})["url"]
-        if sys.platform == "darwin":
-            opened = subprocess.run(["open", url], capture_output=True).returncode == 0
-        else:
-            opened = webbrowser.open(url)
-        if not opened:
-            raise RuntimeError("could not open the default browser")
-        print("Opened authenticated approval page. No action was submitted.")
+        open_page(session, args.print_url)
         return
     registration = args.command == "register"
     if registration:
@@ -106,7 +113,9 @@ def main():
     parser.add_argument("--session", required=True)
     parser.add_argument("--binary", default="target/debug/mct-daemon")
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("open")
+    open_command = commands.add_parser("open")
+    open_command.add_argument("--print-url", action="store_true",
+                              help="print the one-use fragment URL instead of launching a local browser")
     register = commands.add_parser("register")
     register.add_argument("--output", required=True)
     register.add_argument("--name", default="Doug")

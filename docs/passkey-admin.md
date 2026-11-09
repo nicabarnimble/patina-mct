@@ -103,7 +103,9 @@ which can mean refusal/cancellation as well as a gesture restriction.
 
 For a Pocket ID-authenticated hosted page, see
 [Pocket ID-gated MCT root approval](pocketid-approval.md). Pocket ID gates page
-access only; it never replaces the pinned WebAuthn root assertion.
+access only; it never replaces the pinned WebAuthn root assertion. Hosted use is
+login-first, followed by `open --print-url` on the headless host and private
+delivery of the resulting `/approve/#...` URL to the authenticated browser.
 
 Only the private Unix socket can enqueue work. The HTTPS page exchanges a
 one-use fragment capability for an HttpOnly cookie and a separate page identity.
