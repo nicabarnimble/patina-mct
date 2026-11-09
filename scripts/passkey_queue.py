@@ -119,11 +119,12 @@ class Broker:
     def __init__(self, directory, origin):
         self.directory = private_directory(directory)
         parts = urlsplit(origin)
-        if (parts.scheme != "https" or parts.hostname != "mct.localhost"
+        if (parts.scheme != "https" or not parts.hostname
                 or parts.username or parts.password or parts.path or parts.query or parts.fragment):
-            raise ValueError("expected https://mct.localhost:PORT")
+            raise ValueError("expected an HTTPS origin without a path")
         self.origin = origin
         self.host = parts.netloc
+        self.rp_id = parts.hostname
         self.jobs = {}
         self.lock = threading.Lock()
         self.page_token = None
@@ -146,7 +147,7 @@ class Broker:
             if op == "open":
                 self.page_token = secrets.token_urlsafe(32)
                 self.token_deadline = time.monotonic() + 120
-                return {"url": self.origin + "/#" + self.page_token}
+                return {"url": self.origin + "/approve/#" + self.page_token}
             if op == "enqueue":
                 self.jobs = {k: j for k, j in self.jobs.items()
                              if j.phase not in (Phase.TAKEN, Phase.FAILED)}
@@ -168,7 +169,7 @@ class Broker:
                 prepared = request["prepared"]
                 encoded(prepared)
                 root = prepared["root"]
-                if (root["origin"] != self.origin or root["rp_id"] != "mct.localhost"
+                if (root["origin"] != self.origin or root["rp_id"] != self.rp_id
                         or prepared["intent"]["action"]["action"] not in
                         ("bootstrap", "issue_day_key", "revoke_day_key")):
                     raise ValueError("wrong root or action")
@@ -234,7 +235,7 @@ class Broker:
             encoded(result)
             if job.kind == "registration" and job.phase == Phase.OFFERED:
                 if (set(result) != {"rp_id", "origin", "credential_id", "public_key_sec1"}
-                        or result["origin"] != self.origin or result["rp_id"] != "mct.localhost"):
+                        or result["origin"] != self.origin or result["rp_id"] != self.rp_id):
                     raise ValueError("wrong registration origin")
             elif job.kind == "assertion" and job.phase == Phase.OFFERED:
                 if (set(result) != {"intent", "proof"}
@@ -318,6 +319,7 @@ class Service:
         self.broker = Broker(directory, origin)
         broker = self.broker
         assets = {"/": ("text/html", "passkey-approval.html"),
+                  "/approve/": ("text/html", "passkey-approval.html"),
                   "/approval.mjs": ("text/javascript", "passkey-approval.mjs"),
                   "/passkey-admin.mjs": ("text/javascript", "passkey-admin.mjs")}
 

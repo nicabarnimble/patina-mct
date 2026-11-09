@@ -29,7 +29,9 @@ and compatibility proof.
 ## Processes and private files
 
 The existing queue remains loopback-only. Run it on a private port while keeping
-its configured origin equal to the public approval origin:
+its configured origin equal to the public approval origin. The queue derives the
+only accepted WebAuthn RP ID from that exact origin hostname; callers cannot
+supply a different RP ID or origin:
 
 ```sh
 umask 077
@@ -96,10 +98,27 @@ not performed by this repository change.
 
 ## Ceremony
 
-1. Authenticate to Pocket ID.
-2. Open the one-use URL returned by `passkey-approve.py ... open`. Login alone has
-   no queue capability and cannot claim a job.
-3. The page exchanges the URL fragment for the independent queue cookie/page ID.
+Hosted operation is deliberately login-first. Do not open a capability URL before
+Pocket ID authentication; an OIDC cross-origin redirect does not preserve URL
+fragments.
+
+1. Open `https://approval.example.test/login` in the remote operator browser and
+   complete Pocket ID authentication. The authenticated page reports that a fresh
+   CLI URL is still required; login alone cannot claim a job.
+2. On the headless host, print a one-use URL deliberately:
+
+   ```sh
+   python3 scripts/passkey-approve.py --session "$SESSION" open --print-url
+   ```
+
+   Standard `open` still launches a local default browser. `--print-url` does not.
+   Its stdout contains the capability. Deliver it through an operator-controlled
+   private channel and do not copy it into chat, tickets, shell tracing or durable
+   logs. The capability remains in the URL fragment, never a query string.
+3. Open that `/approve/#...` URL in the already authenticated browser. The distinct
+   path forces a fresh page load even when the login landing page is open in the
+   same tab. The page removes the fragment from history and exchanges it for the
+   independent queue cookie/page ID.
 4. Review the pinned root identity (credential ID, RP ID and origin) and complete
    prepared intent displayed on the page, including Mother, action, scopes,
    issued/expiry times and nonce.
@@ -124,10 +143,19 @@ path, not the Pocket ID-hosted deployment.
 
 ## Verification
 
+Gate-unit green is not deployment proof. The earlier isolated tests used a stub
+upstream, posted a capability directly, and ran the browser against the queue
+without the OIDC gate. They could not detect a queue RP hardcode, a local-browser
+CLI assumption, or loss of a fragment when the login landing page reused the same
+path. The hosted-topology regression below composes the real queue, headless CLI,
+gate, mocked OIDC redirect, virtual WebAuthn browser and Mother verification so
+those boundaries fail together.
+
 ```sh
 node --test scripts/passkey-admin.test.mjs scripts/pocketid-approval-gate.test.mjs
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-passkey-queue.py
 node --test scripts/passkey-approval.e2e.test.mjs
+node --test scripts/pocketid-deployment.e2e.test.mjs
 cargo test --locked -p mct-daemon --test passkey_admin
 bash scripts/ci-tier0.sh specs
 ```

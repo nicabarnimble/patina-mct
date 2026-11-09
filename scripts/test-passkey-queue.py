@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import http.client
 import importlib.util
+import io
 import json
 from pathlib import Path
 import ssl
@@ -11,14 +12,16 @@ import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
+from urllib.parse import urlsplit
 
 from passkey_queue import Broker, LIMIT, Service, loads, read_private, rpc
 
 ORIGIN = "https://mct.localhost:18443"
+HOSTED_ORIGIN = "https://approval.example.test:18443"
 
 
-def prepared():
-    return {"root": {"origin": ORIGIN, "rp_id": "mct.localhost", "credential_id": "fixture"},
+def prepared(origin=ORIGIN, rp_id="mct.localhost"):
+    return {"root": {"origin": origin, "rp_id": rp_id, "credential_id": "fixture"},
             "challenge": "fixture", "intent": {"nonce": "fixture", "action": {"action": "bootstrap"}}}
 
 
@@ -28,12 +31,28 @@ def signed(value):
 
 
 class DefaultBrowserTests(unittest.TestCase):
-    def test_open_uses_system_default_and_reports_launch_failure(self):
+    def load_approve(self):
         spec = importlib.util.spec_from_file_location(
             "approve", Path(__file__).with_name("passkey-approve.py"))
         approve = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(approve)
-        url = ORIGIN + "/#test-only-capability"
+        return approve
+
+    def test_open_print_url_supports_headless_remote_handoff(self):
+        approve = self.load_approve()
+        url = HOSTED_ORIGIN + "/approve/#test-only-capability"
+        output = io.StringIO()
+        with patch.object(approve, "private_directory", return_value=Path("unused")), \
+                patch.object(approve, "rpc", return_value={"url": url}), \
+                patch.object(approve.subprocess, "run", side_effect=AssertionError("must not launch")), \
+                patch.object(approve.webbrowser, "open", side_effect=AssertionError("must not launch")), \
+                patch("sys.stdout", output):
+            approve.execute(SimpleNamespace(session="unused", command="open", print_url=True))
+        self.assertEqual(output.getvalue(), url + "\n")
+
+    def test_open_uses_system_default_and_reports_launch_failure(self):
+        approve = self.load_approve()
+        url = ORIGIN + "/approve/#test-only-capability"
         for platform in ("darwin", "linux"):
             for success in (True, False):
                 with self.subTest(platform=platform, success=success), \
@@ -44,7 +63,7 @@ class DefaultBrowserTests(unittest.TestCase):
                         patch.object(approve.webbrowser, "open", return_value=success) as browser, \
                         patch.object(approve.webbrowser, "get", side_effect=AssertionError("must use system default")), \
                         patch("builtins.print"):
-                    args = SimpleNamespace(session="unused", command="open")
+                    args = SimpleNamespace(session="unused", command="open", print_url=False)
                     if success:
                         approve.execute(args)
                     else:
@@ -60,6 +79,43 @@ class DefaultBrowserTests(unittest.TestCase):
 
 
 class QueueTests(unittest.TestCase):
+    def test_open_uses_distinct_capability_path_for_authenticated_reload(self):
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as directory:
+            url = urlsplit(Broker(directory, ORIGIN).cli({"op": "open"})["url"])
+            self.assertEqual(url.path, "/approve/")
+            self.assertTrue(url.fragment)
+            self.assertFalse(url.query)
+
+    def test_hosted_origin_derives_exact_rp_for_registration_and_publish(self):
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as directory:
+            broker = Broker(directory, HOSTED_ORIGIN)
+            token = broker.cli({"op": "open"})["url"].split("#")[1]
+            page = broker.authenticate(token)
+
+            registration = broker.cli({"op": "enqueue", "kind": "registration"})
+            offered = broker.page("next", {}, **page)
+            root = {"rp_id": "approval.example.test", "origin": HOSTED_ORIGIN,
+                    "credential_id": "registration-fixture", "public_key_sec1": "fixture"}
+            for field, wrong in (("rp_id", "mct.localhost"),
+                                 ("origin", "https://evil.example.test")):
+                substituted = dict(root, **{field: wrong})
+                with self.assertRaises(ValueError):
+                    broker.page("complete", {"id": registration["id"], "offer": offered["offer"],
+                                             "result": substituted}, **page)
+            broker.page("complete", {"id": registration["id"], "offer": offered["offer"],
+                                     "result": root}, **page)
+            broker.cli({"op": "take", "id": registration["id"]})
+
+            assertion = broker.cli({"op": "enqueue", "kind": "assertion"})
+            broker.page("next", {}, **page)
+            for wrong in (prepared(HOSTED_ORIGIN, "mct.localhost"),
+                          prepared("https://evil.example.test", "approval.example.test")):
+                with self.assertRaises(ValueError):
+                    broker.cli({"op": "publish", "id": assertion["id"], "prepared": wrong})
+            broker.cli({"op": "publish", "id": assertion["id"],
+                        "prepared": prepared(HOSTED_ORIGIN, "approval.example.test")})
+            self.assertEqual(broker.page("next", {}, **page)["phase"], "offered")
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve())
         self.addCleanup(self.directory.cleanup)

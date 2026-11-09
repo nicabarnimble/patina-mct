@@ -327,6 +327,7 @@ async function configuration(env) {
 }
 async function loadAssets() {
   const specs = [['/', 'text/html; charset=utf-8', 'passkey-approval.html'],
+    ['/approve/', 'text/html; charset=utf-8', 'passkey-approval.html'],
     ['/approval.mjs', 'text/javascript; charset=utf-8', 'passkey-approval.mjs'],
     ['/passkey-admin.mjs', 'text/javascript; charset=utf-8', 'passkey-admin.mjs']];
   return new Map(await Promise.all(specs.map(async ([route, type, name]) => [route, [type, await readFile(join(ROOT, name))]])));

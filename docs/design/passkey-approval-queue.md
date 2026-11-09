@@ -90,9 +90,11 @@ it is not an in-place upgrade of an active session.
   access. Release alone also accepts a superseded page's matching offer capability
   as a cancellation acknowledgement; it grants no renewal or completion rights.
 - A local CLI receives a one-use, short-lived page capability over an owner-private
-  Unix socket. It opens the capability in the URL fragment, never a query string.
-  The page removes it from history and exchanges it for a Secure, HttpOnly,
-  SameSite=Strict cookie and a separate page identity carried in X-MCT-Page.
+  Unix socket. It opens the capability at the distinct `/approve/` path in the URL
+  fragment, never a query string. The distinct path forces a fresh page load after
+  a hosted login landing page. The page removes it from history and exchanges it
+  for a Secure, HttpOnly, SameSite=Strict cookie and a separate page identity
+  carried in X-MCT-Page.
   One current page identity at a time; restart invalidates it.
 - The page cannot enqueue, replace prepared intent fields or choose output paths.
   Completion must match the queued intent and registered credential. Mother,
@@ -116,8 +118,11 @@ queue cookie/page ID.
 
 These are independent capabilities: Pocket ID login permits page access; the
 one-use fragment creates a queue page session; the offer identifies one prepared
-intent; WebAuthn signs it; Mother decides authority. The OIDC gate has no Mother
-submission route and no MCT root private key. See
+intent; WebAuthn signs it; Mother decides authority. Hosted operation authenticates
+first, then obtains and opens `/approve/#...`; cross-origin OIDC redirects are never
+asked to carry the fragment. The queue derives the exact accepted RP ID from the
+configured public origin hostname. The OIDC gate has no Mother submission route
+and no MCT root private key. See
 [`docs/pocketid-approval.md`](../pocketid-approval.md).
 
 ## Synthesis decision
@@ -135,6 +140,10 @@ shared-cookie fencing, stale completions, substitution, replay, authentication,
 bounds and private files. A CDP test uses a WebAuthn virtual authenticator through
 registration, genesis, issuance, signed status, revocation and fresh rejection
 before/after restart. It checks that there are no file inputs or Sign clicks.
-This establishes test-driver behavior with the virtual authenticator, not actual
-1Password extension behavior. Doug's live rerun is separate. Local CA installation
-remains an explicit one-time operator action; no certificate bypass in live use.
+A separate hosted-topology CDP regression starts the real non-localhost HTTPS
+queue and gate, follows a mocked OIDC redirect, obtains the capability through the
+headless CLI, registers the exact origin-derived RP, and completes the same Mother
+ceremony. This establishes test-driver behavior with the virtual authenticator and
+a mock issuer, not actual Pocket ID or 1Password behavior. Doug's live rerun is
+separate. Local CA installation remains an explicit one-time operator action; no
+certificate bypass in live use.
