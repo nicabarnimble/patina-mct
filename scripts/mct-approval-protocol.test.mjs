@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import {generateKeyPairSync} from 'node:crypto';
+import {createHash, generateKeyPairSync} from 'node:crypto';
+import {readFile} from 'node:fs/promises';
 import test from 'node:test';
 
 import {
@@ -8,6 +9,14 @@ import {
   signEnvelope,
   terminalOutcome,
 } from './mct-approval-protocol.mjs';
+
+test('authoritative packet CSS and Datastar assets remain byte-for-byte pinned', async () => {
+  for (const [path, expected] of [
+    ['scripts/mct-approval/tokens.css', '8e55ee7affe40d75591bf03724396e1ab31852a85a7c7f448aaefbec5907fbbd'],
+    ['scripts/mct-approval/approval.css', '11f341415db53670a0e9e369ce2c13554abe333d21d97b56576f8a73d89e6db5'],
+    ['scripts/mct-approval/datastar.js', '727844adfc825ee651fb93c544a2a739986f9a21820a94524b35f0cac470cf91'],
+  ]) assert.equal(createHash('sha256').update(await readFile(path)).digest('hex'), expected, path);
+});
 
 const approvalKeys = generateKeyPairSync('ed25519');
 const wikiKeys = generateKeyPairSync('ed25519');

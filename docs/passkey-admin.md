@@ -78,54 +78,39 @@ not implemented. Ctrl-C closes serving and drains the ledger actor. An uncertain
 reply is not permission to retry. Unmigrated routes deny, not route to legacy
 mutation helpers.
 
-## Approvals-only local queue
+## QR-to-phone approval queue
 
-Use [the short RUN recipe](passkey-approval-RUN.md) for a fresh live run in your
-default browser with 1Password. The opener uses the system default,
-not a fixed browser application.
+Use [the owner RUN recipe](passkey-approval-RUN.md) for a fresh live run. The
+`--session` mode of `serve-passkey-tap.py` is a loopback-only queue behind the
+Pocket ID gate. `passkey-approve.py` creates one typed request, prints its QR and
+waits. There is no separate opener or fragment handoff.
 
-The `--session` mode of `serve-passkey-tap.py` serves the authenticated queue page,
-not the file-picker page. `passkey-approve.py` queues registration or a root
-operation and waits. It prepares only after a foreground page claims that work,
-then receives the private signed request and invokes bootstrap or `send-iroh`.
-The page never applies administration. Existing low-level CLI commands remain
-available; they do not implicitly connect to a broker.
+Registration remains independent of command approval. Install an owner-private
+`registered-root.json` created at the exact `mct-approval.nicabar.org` RP before
+running the queue. The queue accepts only MCT grants and NIC-132 access proofs.
 
-The approval page now requires one explicit **Approve reviewed action** click
-before registration and before each root assertion. The CDP virtual-authenticator
-test therefore expects four normal clicks (registration plus three root actions),
-zero file selections/downloads/Sign buttons, and active user consent for every
-WebAuthn request. An injected provider-refusal test adds one explicit retry click
-per root action. That injection does not establish a browser requirement.
-Actual 1Password provider selection, unlock and approval UI remain subject to
-Doug's live rerun. The page offers at most one explicit retry after NotAllowedError,
-which can mean refusal/cancellation as well as a gesture restriction.
+Scan the QR, match the short code and sign in. Pocket ID reveals the request but
+grants nothing. For a grant, review the exact intent and tap **Approve with MCT
+passkey** before WebAuthn. The CLI prepares only after the phone is authenticated,
+so the ten-minute QR does not extend Mother's five-minute intent. The queue writes
+one private assertion; the waiting CLI submits it; Mother still verifies every
+binding and makes the authority decision.
 
-For a Pocket ID-authenticated hosted page, see
-[Pocket ID-gated MCT root approval](pocketid-approval.md). Pocket ID gates page
-access only; it never replaces the pinned WebAuthn root assertion. Hosted use is
-login-first, followed by `open --print-url` on the headless host and private
-delivery of the resulting `/approve/#...` URL to the authenticated browser.
+For access proof, the phone performs a top-level redirect through the Grok Life
+wiki handler and returns a signed pass/fail result. Failure consumes the code.
+See [the hosted approval contract](pocketid-approval.md) and
+[the queue state model](design/passkey-approval-queue.md).
 
-Only the private Unix socket can enqueue work. The HTTPS page exchanges a
-one-use fragment capability for an HttpOnly cookie and a separate page identity.
-Each offer belongs to that page and has a renewable 30-second lease. Completion
-must match the current page, offer capability and exact queued intent. See [the queue contract](design/passkey-approval-queue.md) for
-states, limits, failure handling and trust boundaries. Keep the page focused.
-Preparation is just in time, not an extension of Mother's five-minute window.
-If Doug leaves an already visible prompt, it can still expire. An expired attempt
-stops without automatic resubmission. If a page disappears or stops responding
-before delivery, run `passkey-approve.py --session SESSION open` again. New page
-authentication fences the old page immediately. The same unsigned job becomes
-available after cancellation acknowledgement or lease expiry. Do not restart the
-demo for this handoff. A root intent keeps its original expiry. Inspect canonical
-state before any retry after a lost submission reply or interrupted run.
+Only the private Unix socket can enqueue work. The QR capability is at least 128
+bits, expires after ten minutes and is stored across OIDC in a short-lived
+server-side session referenced by a Secure, HttpOnly, SameSite=Lax cookie. The
+display capability is read-only. Phone and desktop updates use SSE. Neither SSE
+reconnection nor an offline status check repeats WebAuthn or a wiki check.
 
-The page cancels WebAuthn when hidden or unloaded, or when it loses its lease.
-A frozen external provider UI cannot be forcibly dismissed by the broker, but its
-stale result is always refused. An active broker from an older revision does not
-acquire this protocol through source edits; start a matching broker only after
-finishing the existing live run.
+Actual Pocket ID, Cloudflare Access and 1Password provider selection/unlock remain
+owner-operated target evidence. The Chrome virtual authenticator proves the code
+path, not real 1Password UX. Inspect canonical state before any retry after an
+uncertain Mother reply.
 
 ## Original manual 1Password tap test
 

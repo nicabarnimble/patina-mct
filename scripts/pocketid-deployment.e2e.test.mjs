@@ -5,300 +5,194 @@ import {createHash, generateKeyPairSync, sign} from 'node:crypto';
 import {access, chmod, mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {createServer as createHttpsServer} from 'node:https';
 import {createServer as createNetServer} from 'node:net';
-import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {promisify} from 'node:util';
 import {run as runGate} from './pocketid-approval-gate.mjs';
+import {signEnvelope, verifyEnvelope} from './mct-approval-protocol.mjs';
 
 const exec = promisify(execFile);
 const sleep = milliseconds => new Promise(resolvePromise => setTimeout(resolvePromise, milliseconds));
-
 async function eventually(task, timeout = 15000) {
-  const deadline = Date.now() + timeout;
-  let last;
-  while (Date.now() < deadline) {
-    try { return await task(); } catch (error) { last = error; await sleep(50); }
-  }
+  const deadline = Date.now() + timeout; let last;
+  while (Date.now() < deadline) { try { return await task(); } catch (error) { last = error; await sleep(50); } }
   throw last;
 }
-
-async function stop(child, group = false) {
+async function stop(child) {
   if (!child || child.exitCode !== null || child.signalCode !== null) return;
-  if (group) process.kill(-child.pid, 'SIGTERM');
-  else child.kill('SIGTERM');
-  await eventually(async () => assert(child.exitCode !== null || child.signalCode !== null), 10000)
-    .catch(() => group ? process.kill(-child.pid, 'SIGKILL') : child.kill('SIGKILL'));
+  child.kill('SIGTERM');
+  await eventually(async () => assert(child.exitCode !== null || child.signalCode !== null), 10000).catch(() => child.kill('SIGKILL'));
 }
-
 async function freePort() {
-  const server = createNetServer();
-  server.listen(0, '127.0.0.1');
-  await new Promise(resolvePromise => server.once('listening', resolvePromise));
-  const port = server.address().port;
-  await new Promise(resolvePromise => server.close(resolvePromise));
-  return port;
+  const server = createNetServer(); server.listen(0, '127.0.0.1'); await new Promise(resolvePromise => server.once('listening', resolvePromise));
+  const port = server.address().port; await new Promise(resolvePromise => server.close(resolvePromise)); return port;
 }
-
 class CDP {
   constructor(socket) {
-    this.socket = socket;
-    this.next = 0;
-    this.pending = new Map();
+    this.socket = socket; this.next = 0; this.pending = new Map();
     socket.addEventListener('message', event => {
-      const message = JSON.parse(event.data);
-      if (!message.id) return;
-      const waiter = this.pending.get(message.id);
-      this.pending.delete(message.id);
-      if (!waiter) return;
-      clearTimeout(waiter.timer);
-      message.error ? waiter.reject(new Error(JSON.stringify(message.error))) : waiter.resolve(message.result);
+      const message = JSON.parse(event.data); if (!message.id) return;
+      const waiter = this.pending.get(message.id); this.pending.delete(message.id); if (!waiter) return;
+      clearTimeout(waiter.timer); message.error ? waiter.reject(new Error(JSON.stringify(message.error))) : waiter.resolve(message.result);
     });
   }
   call(method, params = {}, sessionId) {
     return new Promise((resolvePromise, reject) => {
-      const id = ++this.next;
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`CDP timeout: ${method}`));
-      }, 15000);
-      this.pending.set(id, {resolve: resolvePromise, reject, timer});
-      this.socket.send(JSON.stringify({id, method, params, sessionId}));
+      const id = ++this.next; const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`CDP timeout: ${method}`)); }, 15000);
+      this.pending.set(id, {resolve: resolvePromise, reject, timer}); this.socket.send(JSON.stringify({id, method, params, sessionId}));
     });
   }
-  close() {
-    for (const waiter of this.pending.values()) {
-      clearTimeout(waiter.timer);
-      waiter.reject(new Error('CDP closed'));
-    }
-    this.pending.clear();
-    this.socket.close();
-  }
+  close() { this.socket.close(); }
 }
-
 async function certificate(directory) {
-  const cert = join(directory, 'cert.pem');
-  const key = join(directory, 'key.pem');
-  await exec('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', key,
-    '-out', cert, '-days', '1', '-subj', '/CN=approval.example.test',
-    '-addext', 'subjectAltName=DNS:approval.example.test,DNS:id.example.test']);
+  const cert = join(directory, 'cert.pem'); const key = join(directory, 'key.pem');
+  await exec('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', key, '-out', cert, '-days', '1',
+    '-subj', '/CN=mct-approval.nicabar.org', '-addext', 'subjectAltName=DNS:mct-approval.nicabar.org,DNS:id.nicabar.org,DNS:wiki.nicabar.org']);
   await chmod(key, 0o600);
   const {stdout: publicKey} = await exec('openssl', ['x509', '-in', cert, '-pubkey', '-noout']);
   const converted = spawn('openssl', ['pkey', '-pubin', '-outform', 'DER'], {stdio: ['pipe', 'pipe', 'ignore']});
-  const chunks = [];
-  converted.stdout.on('data', data => chunks.push(data));
-  converted.stdin.end(publicKey);
-  await new Promise((resolvePromise, reject) => converted.on('exit', code => code === 0
-    ? resolvePromise() : reject(new Error('SPKI conversion failed'))));
+  const chunks = []; converted.stdout.on('data', data => chunks.push(data)); converted.stdin.end(publicKey);
+  await new Promise((resolvePromise, reject) => converted.on('exit', code => code === 0 ? resolvePromise() : reject(new Error('SPKI conversion failed'))));
   return {cert, key, spki: createHash('sha256').update(Buffer.concat(chunks)).digest('base64')};
 }
-
-const base64url = value => Buffer.from(typeof value === 'string' ? value : JSON.stringify(value)).toString('base64url');
-
+const b64 = value => Buffer.from(typeof value === 'string' ? value : JSON.stringify(value)).toString('base64url');
 function idToken(privateKey, claims) {
-  const header = base64url({alg: 'RS256', kid: 'deployment-test', typ: 'JWT'});
-  const payload = base64url(claims);
-  const input = `${header}.${payload}`;
+  const header = b64({alg: 'RS256', kid: 'hosted-test', typ: 'JWT'}); const payload = b64(claims); const input = `${header}.${payload}`;
   return `${input}.${sign('RSA-SHA256', Buffer.from(input), privateKey).toString('base64url')}`;
 }
+function processOutput(child) {
+  let stdout = '', stderr = '';
+  child.stdout.on('data', data => { stdout += data; }); child.stderr.on('data', data => { stderr += data; });
+  return {get stdout() { return stdout; }, get stderr() { return stderr; }};
+}
+async function exitCode(child) {
+  if (child.exitCode !== null) return child.exitCode;
+  return new Promise(resolvePromise => child.once('exit', resolvePromise));
+}
+async function click(page, selector) {
+  const point = await eventually(async () => {
+    const result = await page('Runtime.evaluate', {expression: `(() => { const e=document.querySelector(${JSON.stringify(selector)}); if(!e)return null; e.scrollIntoView({block:'center'}); const b=e.getBoundingClientRect(); return {x:b.x+b.width/2,y:b.y+b.height/2}; })()`, returnByValue: true});
+    assert(result.result.value); return result.result.value;
+  });
+  await page('Input.dispatchMouseEvent', {type: 'mousePressed', button: 'left', clickCount: 1, ...point});
+  await page('Input.dispatchMouseEvent', {type: 'mouseReleased', button: 'left', clickCount: 1, ...point});
+}
+async function scanAndSignIn(page, url) {
+  await page('Page.navigate', {url}); await page('Page.bringToFront');
+  await eventually(async () => {
+    const text = await page('Runtime.evaluate', {expression: 'document.body.innerText', returnByValue: true});
+    assert.match(text.result.value, /A bot is asking/); assert.doesNotMatch(text.result.value, /unraid-mother|example-handbook/);
+  });
+  const href = await page('Runtime.evaluate', {expression: 'document.querySelector(".btn-signin").href', returnByValue: true});
+  await page('Page.navigate', {url: href.result.value});
+}
 
-test('hosted non-localhost login-first ceremony reaches Mother through a headless URL handoff', {timeout: 180000}, async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'mct-pocketid-deployment-'));
-  const session = join(directory, 'session');
-  const runDirectory = join(directory, 'run');
-  await mkdir(session, {mode: 0o700});
+test('hosted non-localhost QR flows complete one Mother grant and one NIC-132 proof', {timeout: 180000}, async t => {
+  const directory = await mkdtemp(join(process.cwd(), '.mct-qr-hosted-'));
+  const session = join(directory, 'session'); const runDirectory = join(directory, 'run'); const mother = join(runDirectory, 'mother');
+  await mkdir(session, {mode: 0o700}); await mkdir(runDirectory, {mode: 0o700}); await mkdir(mother, {mode: 0o700});
   const {cert, key, spki} = await certificate(directory);
-  const gatePort = await freePort();
-  const queuePort = await freePort();
-  const issuerPort = await freePort();
-  const origin = `https://approval.example.test:${gatePort}`;
-  const issuer = `https://id.example.test:${issuerPort}`;
-  const clientId = 'mct-deployment-test';
-  const subject = 'operator-deployment-test';
-  const secret = join(directory, 'client-secret');
-  const subjects = join(directory, 'subjects.json');
-  await writeFile(secret, 'disposable-test-secret\n', {mode: 0o600});
-  await writeFile(subjects, JSON.stringify([subject]), {mode: 0o600});
-
-  const {privateKey, publicKey} = generateKeyPairSync('rsa', {modulusLength: 2048});
-  const jwk = publicKey.export({format: 'jwk'});
-  Object.assign(jwk, {kid: 'deployment-test', alg: 'RS256', use: 'sig'});
-  let callbackNonce = '';
-  let issuerServer, gate, queue, chrome, demo, cdp;
+  const gatePort = await freePort(); const queuePort = await freePort(); const issuerPort = await freePort(); const wikiPort = await freePort();
+  const origin = 'https://mct-approval.nicabar.org'; const issuer = 'https://id.nicabar.org';
+  const wikiProofUrl = 'https://wiki.nicabar.org/library/_mct-proof';
+  const clientId = 'mct-hosted-test'; const subject = 'operator-hosted-test';
+  const secret = join(directory, 'client-secret'); const subjects = join(directory, 'subjects.json');
+  const proofPrivateFile = join(directory, 'proof-private.pem'); const proofPublicFile = join(directory, 'proof-public.pem');
+  const wikiPrivateFile = join(directory, 'wiki-private.pem'); const wikiPublicFile = join(directory, 'wiki-public.pem');
+  await writeFile(secret, 'disposable-test-secret\n', {mode: 0o600}); await writeFile(subjects, JSON.stringify([subject]), {mode: 0o600});
+  const approvalProofKeys = generateKeyPairSync('ed25519'); const wikiKeys = generateKeyPairSync('ed25519');
+  await writeFile(proofPrivateFile, approvalProofKeys.privateKey.export({format: 'pem', type: 'pkcs8'}), {mode: 0o600});
+  await writeFile(proofPublicFile, approvalProofKeys.publicKey.export({format: 'pem', type: 'spki'}), {mode: 0o600});
+  await writeFile(wikiPrivateFile, wikiKeys.privateKey.export({format: 'pem', type: 'pkcs8'}), {mode: 0o600});
+  await writeFile(wikiPublicFile, wikiKeys.publicKey.export({format: 'pem', type: 'spki'}), {mode: 0o600});
+  const oidcKeys = generateKeyPairSync('rsa', {modulusLength: 2048}); const jwk = oidcKeys.publicKey.export({format: 'jwk'});
+  Object.assign(jwk, {kid: 'hosted-test', alg: 'RS256', use: 'sig'});
+  let callbackNonce = ''; let ticketSeen; let issuerServer, wikiServer, gate, queue, chrome, grant, proof, cdp;
   let queueErrors = '';
-  let demoOutput = '';
-  let demoErrors = '';
   try {
     issuerServer = createHttpsServer({cert: await readFile(cert), key: await readFile(key)}, (request, response) => {
-      const url = new URL(request.url, issuer);
-      if (url.pathname !== '/authorize') {
-        response.writeHead(404).end();
-        return;
-      }
-      callbackNonce = url.searchParams.get('nonce');
-      const callback = new URL(url.searchParams.get('redirect_uri'));
-      callback.searchParams.set('code', 'deployment-code');
-      callback.searchParams.set('state', url.searchParams.get('state'));
+      const url = new URL(request.url, issuer); if (url.pathname !== '/authorize') return response.writeHead(404).end();
+      callbackNonce = url.searchParams.get('nonce'); const callback = new URL(url.searchParams.get('redirect_uri'));
+      callback.searchParams.set('code', 'hosted-code'); callback.searchParams.set('state', url.searchParams.get('state'));
       response.writeHead(302, {Location: callback.href}).end();
     });
-    issuerServer.listen(issuerPort, '127.0.0.1');
-    await new Promise(resolvePromise => issuerServer.once('listening', resolvePromise));
-
-    queue = spawn('python3', ['scripts/serve-passkey-tap.py', '--session', session,
-      '--origin', origin, '--listen', `127.0.0.1:${queuePort}`, '--cert', cert, '--key', key]);
-    queue.stderr.on('data', data => { queueErrors += data; });
-    await eventually(async () => {
-      if (queue.exitCode !== null) throw new Error(queueErrors || `queue exited ${queue.exitCode}`);
-      await access(join(session, 'control.sock'));
+    issuerServer.listen(issuerPort, '127.0.0.1'); await new Promise(resolvePromise => issuerServer.once('listening', resolvePromise));
+    wikiServer = createHttpsServer({cert: await readFile(cert), key: await readFile(key)}, (request, response) => {
+      const url = new URL(request.url, wikiProofUrl); if (url.pathname !== '/library/_mct-proof') return response.writeHead(404).end();
+      const ticket = verifyEnvelope(url.searchParams.get('t'), approvalProofKeys.publicKey); ticketSeen = ticket;
+      assert.equal(ticket.kind, 'mct-access-proof-ticket/v1'); assert.equal(ticket.expected_subject, 'nicabar');
+      assert.equal(ticket.required_group, 'wiki-admin'); assert.equal(ticket.path, '/library/example-handbook.pdf');
+      const now = Math.floor(Date.now()/1000);
+      const result = signEnvelope({kind: 'mct-access-proof-result/v1', request_id: ticket.request_id, nonce: ticket.nonce,
+        path: ticket.path, subject: 'nicabar', outcome: 'allowed', reason: 'ok', iat: now, exp: now+60}, wikiKeys.privateKey);
+      const back = new URL(ticket.return_url); back.searchParams.set('r', result); response.writeHead(303, {Location: back.href}).end();
     });
-
+    wikiServer.listen(wikiPort, '127.0.0.1'); await new Promise(resolvePromise => wikiServer.once('listening', resolvePromise));
+    queue = spawn('python3', ['scripts/serve-passkey-tap.py', '--session', session, '--origin', origin,
+      '--listen', `127.0.0.1:${queuePort}`, '--cert', cert, '--key', key], {env: {...process.env, PYTHONDONTWRITEBYTECODE: '1'}});
+    queue.stderr.on('data', data => { queueErrors += data; });
+    await eventually(async () => { if (queue.exitCode !== null) throw new Error(queueErrors || `queue exited ${queue.exitCode}`); await access(join(session, 'control.sock')); });
     const fetcher = async (target, options = {}) => {
       const href = String(target);
-      if (href.endsWith('/.well-known/openid-configuration')) return new Response(JSON.stringify({
-        issuer, authorization_endpoint: `${issuer}/authorize`, token_endpoint: `${issuer}/token`,
-        jwks_uri: `${issuer}/jwks`, id_token_signing_alg_values_supported: ['RS256'],
-      }), {status: 200});
+      if (href.endsWith('/.well-known/openid-configuration')) return new Response(JSON.stringify({issuer,
+        authorization_endpoint: `${issuer}/authorize`, token_endpoint: `${issuer}/token`, jwks_uri: `${issuer}/jwks`, id_token_signing_alg_values_supported: ['RS256']}), {status: 200});
       if (href === `${issuer}/token`) {
-        assert.equal(options.method, 'POST');
-        assert(callbackNonce);
-        const current = Math.floor(Date.now() / 1000);
-        return new Response(JSON.stringify({id_token: idToken(privateKey, {
-          iss: issuer, aud: clientId, sub: subject, nonce: callbackNonce,
-          iat: current - 1, exp: current + 300,
-        })}), {status: 200});
+        const current = Math.floor(Date.now()/1000); return new Response(JSON.stringify({id_token: idToken(oidcKeys.privateKey,
+          {iss: issuer, aud: clientId, sub: subject, nonce: callbackNonce, iat: current-1, exp: current+300})}), {status: 200});
       }
       if (href === `${issuer}/jwks`) return new Response(JSON.stringify({keys: [jwk]}), {status: 200});
       throw new Error(`unexpected OIDC URL ${href}`);
     };
-    gate = await runGate({
-      MCT_APPROVAL_ORIGIN: origin,
-      MCT_APPROVAL_LISTEN: `127.0.0.1:${gatePort}`,
-      MCT_APPROVAL_UPSTREAM: `https://127.0.0.1:${queuePort}`,
-      MCT_APPROVAL_UPSTREAM_CA_FILE: cert,
-      MCT_APPROVAL_TLS_CERT_FILE: cert,
-      MCT_APPROVAL_TLS_KEY_FILE: key,
-      MCT_APPROVAL_SESSION_SECONDS: '300',
-      MCT_OIDC_ISSUER: issuer,
-      MCT_OIDC_CLIENT_ID: clientId,
-      MCT_OIDC_CLIENT_SECRET_FILE: secret,
-      MCT_OIDC_ALLOWED_SUBJECTS_FILE: subjects,
-      MCT_OIDC_TOKEN_AUTH_METHOD: 'client_secret_basic',
-    }, {fetcher});
+    gate = await runGate({MCT_APPROVAL_ORIGIN: origin, MCT_APPROVAL_LISTEN: `127.0.0.1:${gatePort}`,
+      MCT_APPROVAL_UPSTREAM: `https://127.0.0.1:${queuePort}`, MCT_APPROVAL_UPSTREAM_CA_FILE: cert,
+      MCT_APPROVAL_TLS_CERT_FILE: cert, MCT_APPROVAL_TLS_KEY_FILE: key, MCT_APPROVAL_SESSION_SECONDS: '300',
+      MCT_OIDC_ISSUER: issuer, MCT_OIDC_CLIENT_ID: clientId, MCT_OIDC_CLIENT_SECRET_FILE: secret,
+      MCT_OIDC_ALLOWED_SUBJECTS_FILE: subjects, MCT_OIDC_TOKEN_AUTH_METHOD: 'client_secret_basic',
+      MCT_APPROVAL_PROOF_SIGNING_KEY_FILE: proofPrivateFile, MCT_APPROVAL_WIKI_VERIFY_KEY_FILE: wikiPublicFile,
+      MCT_APPROVAL_WIKI_PROOF_URL: wikiProofUrl}, {fetcher});
     if (!gate.listening) await new Promise(resolvePromise => gate.once('listening', resolvePromise));
-
-    const chromeBin = process.env.CHROME_BIN || (process.platform === 'darwin'
-      ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : 'google-chrome');
+    const chromeBin = process.env.CHROME_BIN || (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : 'google-chrome');
     const profile = join(directory, 'chrome');
-    chrome = spawn(chromeBin, ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
-      '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--password-store=basic',
-      '--host-resolver-rules=MAP approval.example.test 127.0.0.1, MAP id.example.test 127.0.0.1',
+    chrome = spawn(chromeBin, ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run',
+      '--no-default-browser-check', '--disable-background-networking', '--password-store=basic',
+      `--host-resolver-rules=MAP mct-approval.nicabar.org:443 127.0.0.1:${gatePort}, MAP id.nicabar.org:443 127.0.0.1:${issuerPort}, MAP wiki.nicabar.org:443 127.0.0.1:${wikiPort}`,
       `--ignore-certificate-errors-spki-list=${spki}`, 'about:blank'], {stdio: 'ignore'});
-    const [debugPort, socketPath] = await eventually(async () =>
-      (await readFile(join(profile, 'DevToolsActivePort'), 'utf8')).trim().split('\n'));
-    const socket = new WebSocket(`ws://127.0.0.1:${debugPort}${socketPath}`);
-    await new Promise((resolvePromise, reject) => {
-      socket.addEventListener('open', resolvePromise, {once: true});
-      socket.addEventListener('error', reject, {once: true});
-    });
-    cdp = new CDP(socket);
-    const {targetId} = await cdp.call('Target.createTarget', {url: 'about:blank'});
-    const {sessionId} = await cdp.call('Target.attachToTarget', {targetId, flatten: true});
-    const page = (method, params = {}) => cdp.call(method, params, sessionId);
-    await page('Page.enable');
-    await page('WebAuthn.enable', {enableUI: false});
-    await page('WebAuthn.addVirtualAuthenticator', {options: {protocol: 'ctap2', transport: 'internal',
-      hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true}});
-    await page('Page.addScriptToEvaluateOnNewDocument', {source: `
-      window.deploymentMetrics = {gets: 0, creates: 0, gestures: [], clicks: 0, reviews: []};
-      for (const method of ['get', 'create']) {
-        const original = navigator.credentials[method].bind(navigator.credentials);
-        navigator.credentials[method] = (...args) => {
-          deploymentMetrics[method === 'get' ? 'gets' : 'creates']++;
-          deploymentMetrics.gestures.push(navigator.userActivation.isActive);
-          return original(...args);
-        };
-      }
-      document.addEventListener('click', event => {
-        if (event.target.id === 'approve') {
-          deploymentMetrics.clicks++;
-          deploymentMetrics.reviews.push(document.getElementById('review')?.textContent || '');
-        }
-      });
-    `});
-
-    await page('Page.navigate', {url: `${origin}/login`});
-    await page('Page.bringToFront');
-    await eventually(async () => {
-      const result = await page('Runtime.evaluate', {expression: `JSON.stringify({
-        origin: location.origin,
-        operator: document.getElementById('operator')?.textContent,
-        state: document.getElementById('state')?.textContent,
-        hash: location.hash
-      })`, returnByValue: true});
-      const state = JSON.parse(result.result.value);
-      assert.equal(state.origin, origin);
-      assert.equal(state.operator, subject);
-      assert.equal(state.hash, '');
-      assert.match(state.state, /Open a fresh authenticated page through the CLI/);
-    });
-
-    const opened = await exec('python3', ['scripts/passkey-approve.py', '--session', session, 'open', '--print-url'],
-      {env: {...process.env, BROWSER: '/definitely-no-local-browser'}});
-    const approvalUrl = opened.stdout.trim();
-    assert.equal(opened.stderr, '');
-    assert.equal(new URL(approvalUrl).origin, origin);
-    assert.equal(new URL(approvalUrl).pathname, '/approve/');
-    assert.match(new URL(approvalUrl).hash, /^#[A-Za-z0-9_-]{32,}$/);
-    await page('Page.navigate', {url: approvalUrl});
-    await page('Page.bringToFront');
-
+    const [debugPort, socketPath] = await eventually(async () => (await readFile(join(profile, 'DevToolsActivePort'), 'utf8')).trim().split('\n'));
+    const socket = new WebSocket(`ws://127.0.0.1:${debugPort}${socketPath}`); await new Promise((ok, fail) => { socket.addEventListener('open', ok, {once:true}); socket.addEventListener('error', fail, {once:true}); });
+    cdp = new CDP(socket); const {targetId} = await cdp.call('Target.createTarget', {url: `${origin}/tokens.css`});
+    const {sessionId} = await cdp.call('Target.attachToTarget', {targetId, flatten: true}); const page = (method, params={}) => cdp.call(method, params, sessionId);
+    await page('Page.enable'); await page('WebAuthn.enable', {enableUI: false});
+    await page('WebAuthn.addVirtualAuthenticator', {options: {protocol: 'ctap2', transport: 'internal', hasResidentKey: true,
+      hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true}});
+    const rootResult = await page('Runtime.evaluate', {expression: `(async()=>JSON.stringify(await (await import('/passkey-admin.mjs')).registerRoot('mct-approval.nicabar.org','nicabar')))()`, awaitPromise: true, returnByValue: true, userGesture: true});
+    const root = JSON.parse(rootResult.result.value); assert.equal(root.origin, origin); assert.equal(root.rp_id, 'mct-approval.nicabar.org');
+    const pin = join(runDirectory, 'registered-root.json'); await writeFile(pin, JSON.stringify(root), {mode: 0o600});
     const binary = resolve(process.env.MCT_BINARY || 'target/debug/mct-daemon');
-    demo = spawn('python3', ['scripts/passkey-approval-demo.py', '--session', session,
-      '--directory', runDirectory, '--binary', binary], {detached: true});
-    demo.stdout.on('data', data => { demoOutput += data; });
-    demo.stderr.on('data', data => { demoErrors += data; });
-    const finished = new Promise(resolvePromise => demo.once('exit', resolvePromise));
-    await eventually(async () => {
-      if (demo.exitCode !== null && demo.exitCode !== 0) throw new Error(demoErrors || demoOutput);
-      const button = await page('Runtime.evaluate', {expression: `(() => {
-        const element = document.getElementById('approve');
-        if (!element || element.hidden) return null;
-        const box = element.getBoundingClientRect();
-        return {x: box.x + box.width / 2, y: box.y + box.height / 2};
-      })()`, returnByValue: true});
-      if (button.result.value) {
-        await page('Input.dispatchMouseEvent', {type: 'mousePressed', button: 'left', clickCount: 1, ...button.result.value});
-        await page('Input.dispatchMouseEvent', {type: 'mouseReleased', button: 'left', clickCount: 1, ...button.result.value});
-      }
-      const pageState = await page('Runtime.evaluate', {
-        expression: 'document.getElementById("state")?.textContent', returnByValue: true,
-      });
-      assert.match(demoOutput, /PASS full ceremony/,
-        `page says ${pageState.result.value}; demo stderr ${demoErrors}`);
-    }, 90000);
-    assert.equal(await finished, 0, demoErrors);
-
-    const root = JSON.parse(await readFile(join(runDirectory, 'registered-root.json'), 'utf8'));
-    assert.equal(root.origin, origin);
-    assert.equal(root.rp_id, 'approval.example.test');
-    const browser = await page('Runtime.evaluate', {expression: 'JSON.stringify(deploymentMetrics)', returnByValue: true});
-    const metrics = JSON.parse(browser.result.value);
-    assert.equal(metrics.creates, 1);
-    assert.equal(metrics.gets, 3);
-    assert.equal(metrics.clicks, 4);
-    assert.deepEqual(metrics.gestures, [true, true, true, true]);
-    assert.match(demoOutput, /PASS bootstrap committed/);
-    assert.match(demoOutput, /PASS issue committed/);
-    assert.match(demoOutput, /PASS revoke committed/);
-    assert.equal(JSON.parse(await readFile(join(runDirectory, 'day-status.reply.json'), 'utf8')).status, 'completed');
-    assert.equal(JSON.parse(await readFile(join(runDirectory, 'revoked-status.reply.json'), 'utf8')).status, 'rejected');
-    t.diagnostic('hosted login-first flow used a printed fragment URL, non-localhost RP, four explicit clicks, and three Mother-verified root assertions');
+    grant = spawn('python3', ['scripts/passkey-approve.py', '--session', session, '--binary', binary, 'bootstrap',
+      '--root', mother, '--mother', 'unraid-mother', '--ledger-id', 'ledger-hosted', '--registered-root', pin], {env: {...process.env, PYTHONDONTWRITEBYTECODE:'1'}});
+    const grantOutput = processOutput(grant);
+    const grantUrl = await eventually(async () => { const match = grantOutput.stdout.match(/https:\/\/mct-approval\.nicabar\.org\/a\/[A-Za-z0-9_-]+/); assert(match, grantOutput.stderr + grantOutput.stdout); return match[0]; });
+    await scanAndSignIn(page, grantUrl);
+    await eventually(async () => { const found = await page('Runtime.evaluate', {expression: 'JSON.stringify({found:typeof document.querySelector("#approve")?.onclick === "function",url:location.href,text:document.body.innerText})', returnByValue: true}); const state=JSON.parse(found.result.value); assert.equal(state.found, true, JSON.stringify(state) + grantOutput.stderr + grantOutput.stdout); });
+    await click(page, '#approve');
+    await eventually(async () => { const state = await page('Runtime.evaluate', {expression: 'JSON.stringify({url:location.href,text:document.body.innerText})', returnByValue: true}); assert.notEqual(grant.exitCode, null, state.result.value + grantOutput.stderr + grantOutput.stdout); }, 60000);
+    assert.equal(await exitCode(grant), 0, grantOutput.stderr + grantOutput.stdout);
+    assert.match(grantOutput.stdout, /✓ Approved/);
+    proof = spawn('python3', ['scripts/passkey-approve.py', '--session', session, 'proof', '--title', 'The Example Handbook',
+      '--path', '/library/example-handbook.pdf', '--why', 'Checking the library release works for you (NIC-132)'], {env: {...process.env, PYTHONDONTWRITEBYTECODE:'1'}});
+    const proofOutput = processOutput(proof);
+    const proofUrl = await eventually(async () => { const match = proofOutput.stdout.match(/https:\/\/mct-approval\.nicabar\.org\/a\/[A-Za-z0-9_-]+/); assert(match, proofOutput.stderr + proofOutput.stdout); return match[0]; });
+    await scanAndSignIn(page, proofUrl);
+    await eventually(async () => { const found = await page('Runtime.evaluate', {expression: 'JSON.stringify({found:typeof document.querySelector("#check")?.onclick === "function",url:location.href,text:document.body.innerText})', returnByValue: true}); const state=JSON.parse(found.result.value); assert.equal(state.found, true, JSON.stringify(state) + proofOutput.stderr + proofOutput.stdout); });
+    await click(page, '#check');
+    await eventually(async () => { const state = await page('Runtime.evaluate', {expression: 'JSON.stringify({url:location.href,text:document.body.innerText})', returnByValue: true}); assert.notEqual(proof.exitCode, null, state.result.value + proofOutput.stderr + proofOutput.stdout); }, 60000);
+    assert.equal(await exitCode(proof), 0, proofOutput.stderr + proofOutput.stdout);
+    assert.match(proofOutput.stdout, /✓ Passed/); assert(ticketSeen); assert.equal(ticketSeen.required_group, 'wiki-admin');
+    t.diagnostic('direct QR scan survived cross-origin OIDC, Mother verified the MCT passkey grant, and the wiki handler contract returned a signed pass');
   } finally {
-    if (cdp) cdp.close();
-    await stop(demo, true);
-    await stop(chrome);
-    if (gate) await new Promise(resolvePromise => gate.close(resolvePromise));
-    await stop(queue);
+    if (cdp) cdp.close(); await stop(grant); await stop(proof); await stop(chrome);
+    if (gate) await new Promise(resolvePromise => gate.close(resolvePromise)); await stop(queue);
     if (issuerServer) await new Promise(resolvePromise => issuerServer.close(resolvePromise));
+    if (wikiServer) await new Promise(resolvePromise => wikiServer.close(resolvePromise));
     await rm(directory, {recursive: true, force: true});
   }
 });

@@ -1,67 +1,47 @@
-# Doug's approvals-only 1Password rerun
+# Owner-operated QR approval rerun
 
-Use your default browser with 1Password enabled and unlocked. Select
-**1Password**, not iCloud or the browser's password store, for the new registration.
-Save a new test credential.
-This is a fresh run; never reuse or modify `~/.mct-pr88-tap`.
+Use the default browser with 1Password enabled and unlocked. The production MCT
+passkey RP is `mct-approval.nicabar.org`. Never bypass a certificate warning.
 
-## Once per machine
+## One-time root registration
 
-Run `mkcert -install` yourself and approve the OS trust prompt. Do not bypass a
-certificate warning. Test CDP certificates are not used for this live run.
+Register the dedicated MCT credential independently at the approval origin and
+store its public pin as an owner-private `registered-root.json`. Registration is
+not an approval request and is deliberately not one of the queue’s two request
+kinds. Verify the pin contains the exact credential ID, ES256 SEC1 public key,
+RP ID and origin before using it.
 
-## Terminal 1: fresh setup and broker
+## Start the private queue and public gate
 
-From the PR checkout, after building `mct-daemon`:
+Follow [`docs/pocketid-approval.md`](pocketid-approval.md). The queue binds only to
+`127.0.0.1`; Pocket ID, DNS, reverse proxy, certificate and Unraid changes are
+owner operations.
 
-```sh
-T=$(mktemp -d "$HOME/.mct-approval-run.XXXXXX")
-mkdir -m 700 "$T/session"
-install -m 700 target/debug/mct-daemon "$T/mct-daemon"
-mkcert -cert-file "$T/cert.pem" -key-file "$T/key.pem" mct.localhost
-printf 'Use this same T in terminal 2: %s\n' "$T"
-python3 scripts/serve-passkey-tap.py --session "$T/session" \
-  --cert "$T/cert.pem" --key "$T/key.pem"
-```
-
-If port 8443 is occupied, stop the older harness yourself. Do not delete its
-private evidence. A broker restart needs a new session directory.
-
-## Terminal 2: open your default browser with 1Password and run the ceremony
-
-Set `T` to the fresh directory printed above. The opener uses your system default
-browser. Run from the same PR checkout:
+## Run the ceremony
 
 ```sh
-python3 scripts/passkey-approve.py --session "$T/session" open
-python3 scripts/passkey-approval-demo.py --session "$T/session" \
-  --directory "$T/run" --binary "$T/mct-daemon"
+umask 077
+python3 scripts/passkey-approval-demo.py \
+  --session "$SESSION" \
+  --directory "$PRIVATE_RUN" \
+  --binary "$MCT" \
+  --registered-root "$REGISTERED_ROOT"
 ```
 
-Keep the authenticated page focused. Review each displayed operation and click
-**Approve reviewed action** before registration, genesis, issuance and revocation;
-then approve the selected credential in 1Password. There are no files to choose,
-no downloads and no separate Sign button. The CDP virtual-authenticator test
-requires these four explicit clicks. If the provider refuses or cancels, the page
-offers one additional explicit retry click for that action. Retry does not bypass
-provider consent.
+Each root action prints a fresh QR. Scan it, confirm the short code, sign in with
+Pocket ID, review the phone screen, then tap **Approve with MCT passkey**. Select
+the dedicated MCT credential in 1Password. Login is not approval.
 
-Expect PASS for registration, bootstrap, issue, day-status completed, revoke,
-revoked-status rejected, restarted-status rejected, and the full ceremony.
-The day-key status calls need no passkey approval. The demo stops Mother cleanly.
-Then Ctrl-C the broker in terminal 1. Preserve this private directory; do not
-upload it. It contains the day-key secret, TLS key, signed requests and replies.
+Expect bootstrap, issue and revoke to end with the packet’s terminal lines. The
+day-key status checks still need no root passkey. Preserve the private run
+directory; it contains credentials, signed requests and replies and must not be
+uploaded.
 
-For a broker started with this revision, an abandoned page no longer requires
-killing the run. Run only the `open` command again. Keep the demo and broker
-running. The new page takes over the unsigned job after the previous page cancels
-or its 30-second lease expires. Late completions from the old page are refused.
-Do not restart an active older broker to apply source changes during a live run.
+For NIC-132, run the separate `proof` command documented in
+[`docs/pocketid-approval.md`](pocketid-approval.md). A denied or not-found answer
+uses up the code. Fix the wiki release, then request a new QR.
 
-Preparation waits for the page, but an already displayed root intent still has
-its original five-minute limit. Handoff does not extend it. On intent expiry or
-uncertain submission, stop and inspect. Do not rerun the demo against its existing
-run directory or automatically retry an uncertain action.
-Report any provider-selection, unlock, or extra confirmation UI separately from
-the four page-consent clicks and three root assertions. Actual 1Password behavior
-is the point of this rerun.
+A cancelled 1Password sheet may be tried again from the same unconsumed review
+page. An uncertain network or Mother result must be inspected; never sign or
+submit blindly a second time. Report real Pocket ID, Cloudflare Access and
+1Password UX separately from the Chrome virtual-authenticator evidence.

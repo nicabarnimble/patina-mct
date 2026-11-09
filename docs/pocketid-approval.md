@@ -1,77 +1,63 @@
-# Pocket ID-gated MCT root approval
+# MCT QR-to-phone approval
 
-Pocket ID authenticates access to the approval page. It is **not** MCT authority.
-The page still signs the exact prepared intent with the independently pinned
-WebAuthn root, and Mother still performs every canonical verification.
+This is the authoritative NIC-62 approval UX. Pocket ID authenticates page access;
+it is never MCT authority. The MCT passkey signs the exact request, and Mother
+independently decides every grant.
+
+## Operator flow
+
+The bot prints and may display a version-4/M QR, a match code, the request summary,
+a ten-minute countdown and the fallback URL. Scan it directly:
 
 ```text
-Pocket ID login                 page access only
-one-use queue fragment          claim one prepared job
-explicit Approve reviewed action click
-WebAuthn root assertion         cryptographic signing evidence
-Mother verification             authority decision and nonce consumption
+https://mct-approval.nicabar.org/a/<one-use 128-bit capability>
 ```
 
-The gate has no Mother submission endpoint and stores no MCT signing key.
+1. Confirm the phone and bot show the same short code.
+2. Sign in at Pocket ID. No request detail is disclosed before this step.
+3. Review the request on the phone.
+4. For an MCT grant, tap **Approve with MCT passkey** and select the dedicated MCT
+   credential in 1Password. Pocket ID login alone grants nothing.
+5. For a NIC-132 check, tap **Check I can open it**. The browser performs a top-level
+   redirect through the wiki proof handler. The bot receives only pass/fail.
 
-## Credential decision
+The QR capability survives OIDC through a server-side link session referenced by a
+`Secure; HttpOnly; SameSite=Lax` cookie. It is never placed in the callback query.
+Capability URLs must not be copied to shell traces, chat, tickets or durable logs.
 
-Use a dedicated MCT signing credential in the same 1Password account/vault for
-now. Register it at the exact HTTPS approval origin and independently install its
-`registered-root.json` (`credential_id`, ES256 public key, RP ID and origin).
+## Processes
 
-Do not claim that the passkey used to log in to Pocket ID can be reused. A
-WebAuthn credential is RP-scoped, and no current evidence proves that the
-Pocket ID credential has the algorithm, public-key export, credential ID, RP ID
-and exact origin that Mother pins. Reuse needs a separate reviewed enrollment
-and compatibility proof.
-
-## Processes and private files
-
-The existing queue remains loopback-only. Run it on a private port while keeping
-its configured origin equal to the public approval origin. The queue derives the
-only accepted WebAuthn RP ID from that exact origin hostname; callers cannot
-supply a different RP ID or origin:
+The queue stays loopback-only:
 
 ```sh
 umask 077
 python3 scripts/serve-passkey-tap.py \
   --session "$SESSION" \
-  --origin 'https://approval.example.test' \
+  --origin 'https://mct-approval.nicabar.org' \
   --listen '127.0.0.1:9443' \
   --cert "$QUEUE_CERT" --key "$QUEUE_KEY"
 ```
 
-`QUEUE_CERT` must be valid for the approval hostname. The OIDC gate verifies it
-using `MCT_APPROVAL_UPSTREAM_CA_FILE`; certificate verification is never disabled.
-The queue still requires its private Unix socket for enqueue/open operations.
-
-Provision these outside Git, with private ownership and mode 0600:
-
-- OIDC client secret file;
-- JSON subject allowlist, for example `["opaque-pocket-id-sub"]`;
-- gate TLS private key;
-- queue TLS private key;
-- MCT root pin and signed artifacts.
-
-The allowlist uses exact immutable OIDC `sub` values, not email or display name.
-
-## Gate configuration
+The gate requires:
 
 ```sh
-export MCT_APPROVAL_ORIGIN='https://approval.example.test'
+export MCT_APPROVAL_ORIGIN='https://mct-approval.nicabar.org'
 export MCT_APPROVAL_LISTEN='127.0.0.1:8443'
 export MCT_APPROVAL_UPSTREAM='https://127.0.0.1:9443'
 export MCT_APPROVAL_UPSTREAM_CA_FILE='/private/queue-ca.pem'
 export MCT_APPROVAL_TLS_CERT_FILE='/private/approval-cert.pem'
 export MCT_APPROVAL_TLS_KEY_FILE='/private/approval-key.pem'
 
-export MCT_OIDC_ISSUER='https://pocket-id.example.test'
+export MCT_OIDC_ISSUER='https://id.nicabar.org'
 export MCT_OIDC_CLIENT_ID='mct-approval'
 export MCT_OIDC_CLIENT_SECRET_FILE='/private/oidc-client-secret'
 export MCT_OIDC_ALLOWED_SUBJECTS_FILE='/private/allowed-subjects.json'
 export MCT_OIDC_TOKEN_AUTH_METHOD='client_secret_basic'
 export MCT_APPROVAL_SESSION_SECONDS='900'
+
+export MCT_APPROVAL_PROOF_SIGNING_KEY_FILE='/private/mct-proof-ed25519.pem'
+export MCT_APPROVAL_WIKI_VERIFY_KEY_FILE='/private/wiki-proof-ed25519.pub.pem'
+export MCT_APPROVAL_WIKI_PROOF_URL='https://wiki.nicabar.org/library/_mct-proof'
 
 node scripts/pocketid-approval-gate.mjs
 ```
@@ -79,87 +65,96 @@ node scripts/pocketid-approval-gate.mjs
 Register this exact callback in Pocket ID:
 
 ```text
-https://approval.example.test/oidc/callback
+https://mct-approval.nicabar.org/oidc/callback
 ```
 
-The implementation uses Authorization Code + PKCE S256, state and nonce. It
-bounds pending logins and live sessions to 64 each, bounds requests/responses,
-and limits concurrent HTTPS connections. It validates the provider signature
-through discovery/JWKS, exact issuer, client
-audience, `azp` for multi-audience tokens, expiry/not-before/issued-at bounds,
-nonce and the exact subject allowlist. Supported ID-token algorithms are RS256
-and ES256. Configure `client_secret_post` only when the reviewed Pocket ID client
-requires it.
+All private files must be single-link, owner-private regular files. The subject
+allowlist contains immutable OIDC `sub` values, never email addresses. The gate
+validates Authorization Code + PKCE, state, nonce, issuer, audience, `azp`, JWKS
+signature and token timing. It stores no MCT root key and has no Mother route.
 
-A reverse proxy may expose the gate, but it must preserve the exact HTTPS Host
-and origin. The queue itself stays unreachable except from loopback. Pocket ID,
-router, DNS and Unraid changes are target operations owned by Unraid Grok and are
-not performed by this repository change.
+## Bot commands
 
-## Ceremony
-
-Hosted operation is deliberately login-first. Do not open a capability URL before
-Pocket ID authentication; an OIDC cross-origin redirect does not preserve URL
-fragments.
-
-1. Open `https://approval.example.test/login` in the remote operator browser and
-   complete Pocket ID authentication. The authenticated page reports that a fresh
-   CLI URL is still required; login alone cannot claim a job.
-2. On the headless host, print a one-use URL deliberately:
-
-   ```sh
-   python3 scripts/passkey-approve.py --session "$SESSION" open --print-url
-   ```
-
-   Standard `open` still launches a local default browser. `--print-url` does not.
-   Its stdout contains the capability. Deliver it through an operator-controlled
-   private channel and do not copy it into chat, tickets, shell tracing or durable
-   logs. The capability remains in the URL fragment, never a query string.
-3. Open that `/approve/#...` URL in the already authenticated browser. The distinct
-   path forces a fresh page load even when the login landing page is open in the
-   same tab. The page removes the fragment from history and exchanges it for the
-   independent queue cookie/page ID.
-4. Review the pinned root identity (credential ID, RP ID and origin) and complete
-   prepared intent displayed on the page, including Mother, action, scopes,
-   issued/expiry times and nonce.
-5. Click **Approve reviewed action**. This explicit click is required before every
-   WebAuthn request. Pocket ID login is not signing consent.
-6. Select the dedicated MCT root credential in 1Password and approve required user
-   verification.
-7. The page returns the assertion to the waiting CLI. The CLI submits it; Mother
-   recomputes and verifies the canonical challenge, pinned root, RP ID, exact
-   origin, ES256 signature, UP/UV, authority snapshot, nonce and expiry.
-
-Tampering with the action, scopes or expiry changes the challenge and is refused
-before WebAuthn. Replay is refused by both the one-use OIDC login transaction and
-Mother's canonical nonce consumption. A lost reply is uncertain, never permission
-to retry automatically.
-
-## Local development compatibility
-
-The original loopback-only queue can still serve the page without the OIDC gate.
-The page labels that mode explicitly. It remains a local development/live-tap
-path, not the Pocket ID-hosted deployment.
-
-## Verification
-
-Gate-unit green is not deployment proof. The earlier isolated tests used a stub
-upstream, posted a capability directly, and ran the browser against the queue
-without the OIDC gate. They could not detect a queue RP hardcode, a local-browser
-CLI assumption, or loss of a fragment when the login landing page reused the same
-path. The hosted-topology regression below composes the real queue, headless CLI,
-gate, mocked OIDC redirect, virtual WebAuthn browser and Mother verification so
-those boundaries fail together.
+The CLI creates the QR itself; there is no separate `open` handoff:
 
 ```sh
-node --test scripts/passkey-admin.test.mjs scripts/pocketid-approval-gate.test.mjs
-PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-passkey-queue.py
-node --test scripts/passkey-approval.e2e.test.mjs
-node --test scripts/pocketid-deployment.e2e.test.mjs
-cargo test --locked -p mct-daemon --test passkey_admin
-bash scripts/ci-tier0.sh specs
+python3 scripts/passkey-approve.py --session "$SESSION" --binary "$MCT" \
+  bootstrap --root "$MOTHER" --mother unraid-mother --ledger-id ledger \
+  --registered-root "$PIN"
+
+python3 scripts/passkey-approve.py --session "$SESSION" --binary "$MCT" \
+  issue --root "$MOTHER" --mother unraid-mother --ledger-id ledger \
+  --ticket "$TICKET" --grant bot-day --public-key "$PUBLIC" \
+  --scope status --lease-seconds 86400
+
+python3 scripts/passkey-approve.py --session "$SESSION" \
+  proof --title 'The Example Handbook' \
+  --path '/library/example-handbook.pdf' \
+  --why 'Checking the library release works for you (NIC-132)'
 ```
 
-Independent BOX testing must repeat wrong issuer, audience/authorized-party,
-nonce, signature, expiry, subject, CSRF, origin, queue-fragment and callback
-replay negatives. Studio output is not BOX proof.
+Exit codes are fixed:
+
+| Kind | Outcome | Exit |
+|---|---|---:|
+| grant | approved | 0 |
+| grant | declined | 10 |
+| grant | expired | 11 |
+| grant | refused | 12 |
+| proof | pass | 0 |
+| proof | skipped | 10 |
+| proof | expired | 11 |
+| proof | refused | 12 |
+| proof | denied | 20 |
+| proof | not found | 21 |
+
+A registration pin is created independently at the exact approval origin. A
+command cannot register or replace its own trusted root.
+
+## Grok Life wiki handler contract — specification only
+
+This repository implements only the `mct-approval` side. Grok Life owns the wiki
+handler and Caddy routing. No wiki or Caddy change is included here.
+
+`GET https://wiki.nicabar.org/library/_mct-proof?t=<ticket>` must:
+
+1. verify the Ed25519 ticket from mct-approval;
+2. require `kind = mct-access-proof-ticket/v1`;
+3. enforce its two-minute expiry, exact request ID, nonce, path, fixed return URL,
+   expected subject `nicabar`, and required group `wiki-admin`;
+4. verify the Cloudflare Access JWT issuer, audience and expiry;
+5. verify the Access identity is nicabar **and** belongs to `wiki-admin`;
+6. run the same authorization/existence decision as a real read of the exact path,
+   without returning file bytes;
+7. return one of `allowed/ok`, `denied/denied`, or
+   `not_found/not_found` in a signed result;
+8. issue a 303 to the ticket’s fixed return URL with `r=<signed-result>`.
+
+The signed result schema is:
+
+```json
+{
+  "kind": "mct-access-proof-result/v1",
+  "request_id": "exact ticket request",
+  "nonce": "exact ticket nonce",
+  "path": "/library/example-handbook.pdf",
+  "subject": "nicabar",
+  "outcome": "allowed | denied | not_found",
+  "reason": "ok | denied | not_found",
+  "iat": 0,
+  "exp": 0
+}
+```
+
+The result lifetime is at most 60 seconds. mct-approval verifies the wiki signature,
+request ID, nonce, path, subject, outcome pair and times server-side. Valid failure,
+forgery, mismatch, expiry and replay all leave no authority; accepted pass/fail and
+refusal consume the code. A retry requires a new QR.
+
+## Verification boundary
+
+The hosted browser regression uses non-localhost HTTPS names, a mocked Pocket ID
+issuer, a headless Chrome virtual authenticator, the real queue and CLI, Mother,
+and a mocked wiki handler implementing the contract above. It is not proof of real
+Pocket ID, Cloudflare Access, 1Password selection/unlock, DNS, reverse proxy or
+Unraid behavior. Those remain owner-operated target checks.
