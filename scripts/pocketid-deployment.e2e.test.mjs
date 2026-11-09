@@ -3,8 +3,7 @@ import assert from 'node:assert/strict';
 import {execFile, spawn} from 'node:child_process';
 import {createHash, generateKeyPairSync, sign} from 'node:crypto';
 import {access, chmod, mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
-import {createServer as createHttpsServer} from 'node:https';
-import {createServer as createNetServer} from 'node:net';
+import {createServer as createHttpsServer, request as httpsRequest} from 'node:https';
 import {join, resolve} from 'node:path';
 import {promisify} from 'node:util';
 import {run as runGate} from './pocketid-approval-gate.mjs';
@@ -22,9 +21,13 @@ async function stop(child) {
   child.kill('SIGTERM');
   await eventually(async () => assert(child.exitCode !== null || child.signalCode !== null), 10000).catch(() => child.kill('SIGKILL'));
 }
-async function freePort() {
-  const server = createNetServer(); server.listen(0, '127.0.0.1'); await new Promise(resolvePromise => server.once('listening', resolvePromise));
-  const port = server.address().port; await new Promise(resolvePromise => server.close(resolvePromise)); return port;
+function httpsStatus(port, host, path) {
+  return new Promise((resolvePromise, reject) => {
+    const request = httpsRequest({hostname: '127.0.0.1', port, path, rejectUnauthorized: false, headers: {Host: host}}, response => {
+      response.resume(); response.on('end', () => resolvePromise(response.statusCode));
+    });
+    request.on('error', reject); request.end();
+  });
 }
 class CDP {
   constructor(socket) {
@@ -91,7 +94,7 @@ test('hosted non-localhost QR flows complete one Mother grant and one NIC-132 pr
   const session = join(directory, 'session'); const runDirectory = join(directory, 'run'); const mother = join(runDirectory, 'mother');
   await mkdir(session, {mode: 0o700}); await mkdir(runDirectory, {mode: 0o700}); await mkdir(mother, {mode: 0o700});
   const {cert, key, spki} = await certificate(directory);
-  const gatePort = await freePort(); const queuePort = await freePort(); const issuerPort = await freePort(); const wikiPort = await freePort();
+  let gatePort, queuePort, issuerPort, wikiPort;
   const origin = 'https://mct-approval.nicabar.org'; const issuer = 'https://id.nicabar.org';
   const wikiProofUrl = 'https://wiki.nicabar.org/library/_mct-proof';
   const clientId = 'mct-hosted-test'; const subject = 'operator-hosted-test';
@@ -106,8 +109,8 @@ test('hosted non-localhost QR flows complete one Mother grant and one NIC-132 pr
   await writeFile(wikiPublicFile, wikiKeys.publicKey.export({format: 'pem', type: 'spki'}), {mode: 0o600});
   const oidcKeys = generateKeyPairSync('rsa', {modulusLength: 2048}); const jwk = oidcKeys.publicKey.export({format: 'jwk'});
   Object.assign(jwk, {kid: 'hosted-test', alg: 'RS256', use: 'sig'});
-  let callbackNonce = ''; let ticketSeen; let issuerServer, wikiServer, gate, queue, chrome, grant, proof, cdp;
-  let queueErrors = '';
+  let callbackNonce = ''; let ticketSeen, ticketTokenSeen; let issuerServer, wikiServer, gate, queue, chrome, grant, proof, cdp;
+  const consumedTickets = new Set();
   try {
     issuerServer = createHttpsServer({cert: await readFile(cert), key: await readFile(key)}, (request, response) => {
       const url = new URL(request.url, issuer); if (url.pathname !== '/authorize') return response.writeHead(404).end();
@@ -115,22 +118,32 @@ test('hosted non-localhost QR flows complete one Mother grant and one NIC-132 pr
       callback.searchParams.set('code', 'hosted-code'); callback.searchParams.set('state', url.searchParams.get('state'));
       response.writeHead(302, {Location: callback.href}).end();
     });
-    issuerServer.listen(issuerPort, '127.0.0.1'); await new Promise(resolvePromise => issuerServer.once('listening', resolvePromise));
+    issuerServer.listen(0, '127.0.0.1'); await new Promise(resolvePromise => issuerServer.once('listening', resolvePromise));
+    issuerPort = issuerServer.address().port;
     wikiServer = createHttpsServer({cert: await readFile(cert), key: await readFile(key)}, (request, response) => {
       const url = new URL(request.url, wikiProofUrl); if (url.pathname !== '/library/_mct-proof') return response.writeHead(404).end();
-      const ticket = verifyEnvelope(url.searchParams.get('t'), approvalProofKeys.publicKey); ticketSeen = ticket;
+      ticketTokenSeen = url.searchParams.get('t');
+      const ticket = verifyEnvelope(ticketTokenSeen, approvalProofKeys.publicKey); ticketSeen = ticket;
       assert.equal(ticket.kind, 'mct-access-proof-ticket/v1'); assert.equal(ticket.expected_subject, 'nicabar');
       assert.equal(ticket.required_group, 'wiki-admin'); assert.equal(ticket.path, '/library/example-handbook.pdf');
+      const ticketKey = `${ticket.request_id}\0${ticket.nonce}`;
+      if (consumedTickets.has(ticketKey)) return response.writeHead(410).end();
+      consumedTickets.add(ticketKey);
       const now = Math.floor(Date.now()/1000);
       const result = signEnvelope({kind: 'mct-access-proof-result/v1', request_id: ticket.request_id, nonce: ticket.nonce,
         path: ticket.path, subject: 'nicabar', outcome: 'allowed', reason: 'ok', iat: now, exp: now+60}, wikiKeys.privateKey);
       const back = new URL(ticket.return_url); back.searchParams.set('r', result); response.writeHead(303, {Location: back.href}).end();
     });
-    wikiServer.listen(wikiPort, '127.0.0.1'); await new Promise(resolvePromise => wikiServer.once('listening', resolvePromise));
+    wikiServer.listen(0, '127.0.0.1'); await new Promise(resolvePromise => wikiServer.once('listening', resolvePromise));
+    wikiPort = wikiServer.address().port;
     queue = spawn('python3', ['scripts/serve-passkey-tap.py', '--session', session, '--origin', origin,
-      '--listen', `127.0.0.1:${queuePort}`, '--cert', cert, '--key', key], {env: {...process.env, PYTHONDONTWRITEBYTECODE: '1'}});
-    queue.stderr.on('data', data => { queueErrors += data; });
-    await eventually(async () => { if (queue.exitCode !== null) throw new Error(queueErrors || `queue exited ${queue.exitCode}`); await access(join(session, 'control.sock')); });
+      '--listen', '127.0.0.1:0', '--cert', cert, '--key', key], {env: {...process.env, PYTHONDONTWRITEBYTECODE: '1'}});
+    const queueOutput = processOutput(queue);
+    await eventually(async () => {
+      if (queue.exitCode !== null) throw new Error(queueOutput.stderr || `queue exited ${queue.exitCode}`);
+      const match = queueOutput.stdout.match(/Private approval queue listening at 127\.0\.0\.1:(\d+)/);
+      assert(match, queueOutput.stdout); await access(join(session, 'control.sock')); queuePort = Number(match[1]);
+    });
     const fetcher = async (target, options = {}) => {
       const href = String(target);
       if (href.endsWith('/.well-known/openid-configuration')) return new Response(JSON.stringify({issuer,
@@ -142,7 +155,7 @@ test('hosted non-localhost QR flows complete one Mother grant and one NIC-132 pr
       if (href === `${issuer}/jwks`) return new Response(JSON.stringify({keys: [jwk]}), {status: 200});
       throw new Error(`unexpected OIDC URL ${href}`);
     };
-    gate = await runGate({MCT_APPROVAL_ORIGIN: origin, MCT_APPROVAL_LISTEN: `127.0.0.1:${gatePort}`,
+    gate = await runGate({MCT_APPROVAL_ORIGIN: origin, MCT_APPROVAL_LISTEN: '127.0.0.1:0',
       MCT_APPROVAL_UPSTREAM: `https://127.0.0.1:${queuePort}`, MCT_APPROVAL_UPSTREAM_CA_FILE: cert,
       MCT_APPROVAL_TLS_CERT_FILE: cert, MCT_APPROVAL_TLS_KEY_FILE: key, MCT_APPROVAL_SESSION_SECONDS: '300',
       MCT_OIDC_ISSUER: issuer, MCT_OIDC_CLIENT_ID: clientId, MCT_OIDC_CLIENT_SECRET_FILE: secret,
@@ -150,6 +163,7 @@ test('hosted non-localhost QR flows complete one Mother grant and one NIC-132 pr
       MCT_APPROVAL_PROOF_SIGNING_KEY_FILE: proofPrivateFile, MCT_APPROVAL_WIKI_VERIFY_KEY_FILE: wikiPublicFile,
       MCT_APPROVAL_WIKI_PROOF_URL: wikiProofUrl}, {fetcher});
     if (!gate.listening) await new Promise(resolvePromise => gate.once('listening', resolvePromise));
+    gatePort = gate.address().port;
     const chromeBin = process.env.CHROME_BIN || (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : 'google-chrome');
     const profile = join(directory, 'chrome');
     chrome = spawn(chromeBin, ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run',
@@ -187,6 +201,7 @@ test('hosted non-localhost QR flows complete one Mother grant and one NIC-132 pr
     await eventually(async () => { const state = await page('Runtime.evaluate', {expression: 'JSON.stringify({url:location.href,text:document.body.innerText})', returnByValue: true}); assert.notEqual(proof.exitCode, null, state.result.value + proofOutput.stderr + proofOutput.stdout); }, 60000);
     assert.equal(await exitCode(proof), 0, proofOutput.stderr + proofOutput.stdout);
     assert.match(proofOutput.stdout, /✓ Passed/); assert(ticketSeen); assert.equal(ticketSeen.required_group, 'wiki-admin');
+    assert.equal(await httpsStatus(wikiPort, 'wiki.nicabar.org', `/library/_mct-proof?t=${ticketTokenSeen}`), 410);
     t.diagnostic('direct QR scan survived cross-origin OIDC, Mother verified the MCT passkey grant, and the wiki handler contract returned a signed pass');
   } finally {
     if (cdp) cdp.close(); await stop(grant); await stop(proof); await stop(chrome);

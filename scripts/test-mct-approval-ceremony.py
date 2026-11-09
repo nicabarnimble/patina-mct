@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from passkey_queue import Broker
+from passkey_queue import Broker, grant_request_from_action
 
 
 ORIGIN = "https://mct-approval.nicabar.org"
@@ -26,8 +26,8 @@ def grant_request():
 
 def issue_request(scopes=("status",), grant_end="2026-11-09T11:00:00Z"):
     labels = {
-        "status": {"name": "Read Mother status", "description": "Inspect this Mother's governed status"},
-        "key_manage": {"name": "Manage day keys", "description": "Issue or revoke bounded day keys"},
+        "status": {"name": "Read Mother status", "description": "See current governed runtime status"},
+        "key_manage": {"name": "Manage day keys", "description": "Issue and revoke bounded day-to-day keys"},
     }
     return {
         "kind": "grant",
@@ -44,7 +44,7 @@ def bootstrap_request():
         "asker": "Unraid Grok",
         "mother": "unraid-mother",
         "permissions": [
-            {"name": "Establish passkey administration", "description": "Make this passkey the trusted Mother administrator"},
+            {"name": "Establish passkey administration", "description": "Pin this MCT passkey as the independent root"},
         ],
         "grant_ends_at": "On approval",
     }
@@ -132,7 +132,7 @@ class CeremonyAcceptanceTests(unittest.TestCase):
 
     def test_publish_rejects_all_wysiwys_mismatches(self):
         issue_24h = {"action": "issue_day_key", "grant_id": "day-new",
-                     "public_key_sec1": "04" + "22" * 64,
+                     "public_half": {"scheme": "ed25519-day-key/v1", "public_key": "22" * 32},
                      "scopes": ["status", "key_manage"],
                      "expires_at": "2026-11-10T10:00:00Z"}
         mismatches = [
@@ -146,6 +146,20 @@ class CeremonyAcceptanceTests(unittest.TestCase):
                 self.broker.claim(job["token"], "nicabar")
                 with self.assertRaisesRegex(ValueError, "displayed request"):
                     self.broker.cli({"op": "publish", "id": job["id"], "prepared": exact})
+
+    def test_matching_issue_receipt_is_derived_from_the_signed_action(self):
+        action = {"action": "issue_day_key", "grant_id": "day-new",
+                  "public_half": {"scheme": "ed25519-day-key/v1", "public_key": "22" * 32},
+                  "scopes": ["status", "key_manage"],
+                  "expires_at": "2026-11-10T10:00:00Z"}
+        displayed = grant_request_from_action("Unraid Grok", "unraid-mother", action)
+        self.assertEqual(displayed["grant_ends_at"], action["expires_at"])
+        self.assertIn("day-new", displayed["permissions"][0]["description"])
+        self.assertIn("sha256:", displayed["permissions"][0]["description"])
+        job = self.enqueue(displayed)
+        self.broker.claim(job["token"], "nicabar")
+        result = self.broker.cli({"op": "publish", "id": job["id"], "prepared": prepared(action)})
+        self.assertEqual(result["phase"], "prepared")
 
     def test_tampered_grant_is_refused_and_consumed(self):
         job = self.enqueue(grant_request())

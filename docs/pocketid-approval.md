@@ -122,13 +122,25 @@ handler and Caddy routing. No wiki or Caddy change is included here.
 2. require `kind = mct-access-proof-ticket/v1`;
 3. enforce its two-minute expiry, exact request ID, nonce, path, fixed return URL,
    expected subject `nicabar`, and required group `wiki-admin`;
-4. verify the Cloudflare Access JWT issuer, audience and expiry;
-5. verify the Access identity is nicabar **and** belongs to `wiki-admin`;
-6. run the same authorization/existence decision as a real read of the exact path,
+4. atomically consume the request ID and nonce before returning a decision, and
+   reject every later use of that ticket;
+5. verify the Cloudflare Access JWT issuer, audience and expiry;
+6. verify the Access identity is nicabar **and** belongs to `wiki-admin`;
+7. run the same authorization/existence decision as a real read of the exact path,
    without returning file bytes;
-7. return one of `allowed/ok`, `denied/denied`, or
+8. return one of `allowed/ok`, `denied/denied`, or
    `not_found/not_found` in a signed result;
-8. issue a 303 to the ticket’s fixed return URL with `r=<signed-result>`.
+9. issue a 303 to the ticket’s fixed return URL with `r=<signed-result>`.
+
+The `t=` ticket is present in the wiki request URL. It can therefore enter browser
+history and request logs held by the wiki origin, its reverse proxy, and Cloudflare.
+Treat those logs as sensitive: redact query strings, keep only the minimum retention,
+and never copy a ticket into diagnostics. `Referrer-Policy: no-referrer` prevents the
+approval page URL from being sent as a referrer, but it cannot hide the wiki request
+URL from the systems serving that request. The ticket expires after two minutes and
+is one-use under the handler contract above. After the first signed result,
+mct-approval also consumes the approval code, so another result from the same ticket
+cannot create a second pass/fail outcome or any MCT authority.
 
 The signed result schema is:
 

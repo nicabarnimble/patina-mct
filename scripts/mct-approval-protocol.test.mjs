@@ -39,6 +39,13 @@ function result(overrides = {}) {
   };
 }
 
+test('wiki handler contract makes query logging and one-use enforcement explicit', async () => {
+  const contract = await readFile('docs/pocketid-approval.md', 'utf8');
+  assert.match(contract, /enter browser\nhistory and request logs held by the wiki origin, its reverse proxy, and Cloudflare/);
+  assert.match(contract, /atomically consume the request ID and nonce/);
+  assert.match(contract, /expires after two minutes and\nis one-use/);
+});
+
 test('proof ticket specifies the Grok Life wiki handler contract', () => {
   const ticket = makeProofTicket(request, approvalKeys.privateKey, 1_000);
   assert.equal(ticket.payload.kind, 'mct-access-proof-ticket/v1');

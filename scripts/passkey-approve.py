@@ -9,7 +9,7 @@ import sys
 import time
 
 from mct_approval_qr import terminal as terminal_qr
-from passkey_queue import private_directory, read_private, rpc, write_new
+from passkey_queue import grant_request_from_action, private_directory, read_private, rpc, write_new
 
 
 TERMINAL = {"approved", "declined", "passed", "failed", "skipped", "expired", "refused"}
@@ -34,24 +34,6 @@ def wait(session, job_id, phases):
 
 def instant(value):
     return value.astimezone().strftime("%-I:%M %p %Z")
-
-
-def fixed_time(value):
-    return value.astimezone().strftime("%a %b %-d, %-I:%M %p %Z")
-
-
-def permissions(command, args):
-    if command == "issue":
-        rows = []
-        if "status" in args.scope:
-            rows.append({"name": "Read Mother status", "description": "See current governed runtime status"})
-        if "key_manage" in args.scope:
-            rows.append({"name": "Manage day keys", "description": "Issue and revoke bounded day-to-day keys"})
-        return rows
-    if command == "revoke":
-        return [{"name": "Revoke day key", "description": "End access for " + args.grant}]
-    return [{"name": "Establish passkey administration",
-             "description": "Pin this MCT passkey as the independent root"}]
 
 
 def show(job):
@@ -99,21 +81,20 @@ def terminal(job):
     return 12, "× Refused · the answer didn't match this check"
 
 
-def grant_request(args, grant_end):
-    return {"kind": "grant", "asker": args.asker, "mother": args.mother,
-            "permissions": permissions(args.command, args), "grant_ends_at": fixed_time(grant_end)}
+def grant_action(args, grant_end):
+    if args.command == "bootstrap":
+        return {"action": "bootstrap", "root": read_private(args.registered_root)}
+    if args.command == "issue":
+        return {"action": "issue_day_key", "grant_id": args.grant,
+                "public_half": read_private(args.public_key), "scopes": args.scope,
+                "expires_at": grant_end.isoformat()}
+    return {"action": "revoke_day_key", "grant_id": args.grant}
 
 
-def prepare_grant(args, session, job_id, grant_end):
+def prepare_grant(args, session, job_id, action):
     common = ["--root", args.root, "--mother", args.mother, "--ledger-id", args.ledger_id]
     if args.command == "bootstrap":
         return common, mct(args.binary, "prepare-genesis", *common, "--registered-root", args.registered_root)
-    if args.command == "issue":
-        action = {"action": "issue_day_key", "grant_id": args.grant,
-                  "public_half": read_private(args.public_key), "scopes": args.scope,
-                  "expires_at": grant_end.isoformat()}
-    else:
-        action = {"action": "revoke_day_key", "grant_id": args.grant}
     action_path = session / (job_id + ".action.json")
     write_new(action_path, action)
     return common, mct(args.binary, "prepare", *common, "--action", action_path, "--signer", "root")
@@ -123,8 +104,10 @@ def execute_grant(args, session):
     if args.command == "issue" and not 0 < args.lease_seconds <= 86400:
         raise ValueError("lease must be in (0, 86400] seconds")
     now = datetime.now(timezone.utc)
-    grant_end = now + timedelta(seconds=args.lease_seconds if args.command == "issue" else 300)
-    job = rpc(session, {"op": "enqueue", "request": grant_request(args, grant_end)})
+    grant_end = now + timedelta(seconds=args.lease_seconds) if args.command == "issue" else None
+    action = grant_action(args, grant_end)
+    request = grant_request_from_action(args.asker, args.mother, action)
+    job = rpc(session, {"op": "enqueue", "request": request})
     show(job)
     submitted = False
     try:
@@ -133,7 +116,7 @@ def execute_grant(args, session):
             code, line = terminal(opened)
             print(line)
             return code
-        common, prepared = prepare_grant(args, session, job["id"], grant_end)
+        common, prepared = prepare_grant(args, session, job["id"], action)
         rpc(session, {"op": "publish", "id": job["id"], "prepared": prepared})
         signed = wait(session, job["id"], {"signed"})
         if signed["phase"] != "signed":

@@ -4,6 +4,7 @@ from enum import Enum
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import hashlib
 import json
 import os
 import secrets
@@ -88,6 +89,50 @@ def text(value, name, maximum=256):
 
 def exact(value, keys):
     return isinstance(value, dict) and set(value) == set(keys)
+
+
+GRANT_SCOPE_PRESENTATIONS = {
+    "status": {"name": "Read Mother status", "description": "See current governed runtime status"},
+    "key_manage": {"name": "Manage day keys", "description": "Issue and revoke bounded day-to-day keys"},
+}
+
+
+def grant_request_from_action(asker, mother, action):
+    if not isinstance(action, dict):
+        raise ValueError("invalid grant action")
+    kind = action.get("action")
+    if kind == "bootstrap":
+        root = action.get("root")
+        if not isinstance(root, dict):
+            raise ValueError("invalid passkey root")
+        fingerprint = hashlib.sha256(encoded(root)).hexdigest()[:16]
+        permissions = [{"name": "Establish passkey administration",
+                        "description": "Trust passkey root sha256:" + fingerprint + " as the independent administrator"}]
+        grant_end = "On approval"
+    elif kind == "issue_day_key":
+        grant_id = text(action.get("grant_id"), "grant id", 128)
+        scopes = action.get("scopes")
+        if (not isinstance(scopes, list) or not scopes
+                or any(not isinstance(scope, str) for scope in scopes)
+                or len(scopes) != len(set(scopes))
+                or any(scope not in GRANT_SCOPE_PRESENTATIONS for scope in scopes)):
+            raise ValueError("invalid day-key scopes")
+        public_half = action.get("public_half")
+        if not isinstance(public_half, dict):
+            raise ValueError("invalid day-key public half")
+        fingerprint = hashlib.sha256(encoded(public_half)).hexdigest()[:16]
+        permissions = [{"name": "Issue day key",
+                        "description": "Issue grant " + grant_id + " to key sha256:" + fingerprint}]
+        permissions.extend(dict(GRANT_SCOPE_PRESENTATIONS[scope]) for scope in scopes)
+        grant_end = text(action.get("expires_at"), "grant end", 64)
+    elif kind == "revoke_day_key":
+        grant_id = text(action.get("grant_id"), "grant id", 128)
+        permissions = [{"name": "Revoke day key", "description": "End access for " + grant_id}]
+        grant_end = "On approval"
+    else:
+        raise ValueError("unsupported grant action")
+    return normalize_request({"kind": "grant", "asker": asker, "mother": mother,
+                              "permissions": permissions, "grant_ends_at": grant_end})
 
 
 def normalize_request(value):
@@ -259,11 +304,16 @@ class Broker:
                     raise ValueError("grant is not ready for preparation")
                 prepared = request["prepared"]
                 encoded(prepared)
-                root = prepared["root"]
-                if (root["origin"] != self.origin or root["rp_id"] != self.rp_id
-                        or prepared["intent"]["mother_node_id"] != job.request["mother"]
-                        or prepared["intent"]["action"]["action"] not in
-                        ("bootstrap", "issue_day_key", "revoke_day_key")):
+                try:
+                    root = prepared["root"]
+                    intent = prepared["intent"]
+                    displayed = grant_request_from_action(job.request["asker"], intent["mother_node_id"],
+                                                          intent["action"])
+                    matches = (root["origin"] == self.origin and root["rp_id"] == self.rp_id
+                               and encoded(displayed) == encoded(job.request))
+                except (KeyError, TypeError, ValueError):
+                    matches = False
+                if not matches:
                     raise ValueError("prepared grant differs from the displayed request")
                 job.prepared = prepared
                 job.phase = Phase.PREPARED
