@@ -45,7 +45,9 @@ cannot supply or replace its own trusted pin.
 ## Timing and delivery
 
 Preparation starts after the visible, focused page claims queued work. The page
-renders the exact prepared intent, yields a paint, then calls WebAuthn. Mother
+renders the pinned root identity and exact prepared intent, yields a paint, and requires an explicit
+**Approve reviewed action** click before it calls WebAuthn. Login, page focus and
+an offered job are not signing consent. Mother
 still owns the five-minute intent timestamp; the browser cannot extend it.
 This removes time spent waiting for the page, not time spent away from an already
 visible approval. No signed request is automatically replayed or re-prepared.
@@ -102,6 +104,21 @@ it is not an in-place upgrade of an active session.
   Existing files are not overwritten or chmod-repaired. No process-wide umask
   changes. Same-UID hostile processes and a compromised browser/host are outside
   this harness isolation boundary.
+
+## Optional Pocket ID page gate
+
+The hosted integration adds a separate Node OIDC gate in front of this private
+loopback queue. It validates Authorization Code + PKCE, state, nonce, issuer,
+audience/authorized-party, JWKS signature, time and an exact `sub` allowlist. It
+also requires a short-lived server-side session and CSRF token before proxying a
+bounded queue POST. The OIDC gate strips its own cookies and forwards only the
+queue cookie/page ID.
+
+These are independent capabilities: Pocket ID login permits page access; the
+one-use fragment creates a queue page session; the offer identifies one prepared
+intent; WebAuthn signs it; Mother decides authority. The OIDC gate has no Mother
+submission route and no MCT root private key. See
+[`docs/pocketid-approval.md`](../pocketid-approval.md).
 
 ## Synthesis decision
 

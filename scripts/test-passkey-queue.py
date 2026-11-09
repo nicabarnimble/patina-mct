@@ -257,6 +257,22 @@ class QueueTests(unittest.TestCase):
 
 
 class HTTPTests(unittest.TestCase):
+    def test_private_queue_can_listen_on_a_separate_loopback_port(self):
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as directory:
+            directory = Path(directory)
+            cert, key = directory / "cert.pem", directory / "key.pem"
+            subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                            "-keyout", str(key), "-out", str(cert), "-days", "1",
+                            "-subj", "/CN=mct.localhost"], check=True, capture_output=True)
+            service = Service(directory, ORIGIN, cert, key, listen=("127.0.0.1", 0))
+            try:
+                self.assertEqual(service.http.server_address[0], "127.0.0.1")
+                self.assertNotEqual(service.http.server_port, 18443)
+                self.assertEqual(service.broker.origin, ORIGIN)
+            finally:
+                service.control.close()
+                service.http.server_close()
+
     def test_https_auth_origin_host_route_and_body_guards(self):
         with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as directory:
             directory = Path(directory)

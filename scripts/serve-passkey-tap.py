@@ -22,6 +22,14 @@ def origin_parts(origin):
     return parts.netloc, parts.port if parts.port is not None else 443
 
 
+def listen_parts(value):
+    parts = urlsplit("//" + value)
+    if (parts.hostname != "127.0.0.1" or parts.port is None
+            or parts.username or parts.password or parts.path or parts.query or parts.fragment):
+        raise ValueError("--listen must be 127.0.0.1:port")
+    return parts.hostname, parts.port
+
+
 def make_server(origin, cert, key):
     host, port = origin_parts(origin)
 
@@ -69,15 +77,23 @@ def main():
     parser.add_argument("--cert", required=True)
     parser.add_argument("--key", required=True)
     parser.add_argument("--session", help="owner-private directory for the approvals-only queue")
+    parser.add_argument("--listen", help="private queue listener, 127.0.0.1:port; session mode only")
     args = parser.parse_args()
     if args.session:
         from passkey_queue import Service
-        service = Service(args.session, args.origin, args.cert, args.key)
+        service = Service(args.session, args.origin, args.cert, args.key,
+                          listen=listen_parts(args.listen) if args.listen else None)
     else:
+        if args.listen:
+            parser.error("--listen requires --session")
         service = make_server(args.origin, args.cert, args.key)
     with service as server:
-        print(f"Open {args.origin} in a browser with 1Password enabled. Ctrl-C to stop.",
-              flush=True)
+        if args.listen:
+            print(f"Private approval queue listening at {args.listen} for gate origin {args.origin}. Ctrl-C to stop.",
+                  flush=True)
+        else:
+            print(f"Open {args.origin} in a browser with 1Password enabled. Ctrl-C to stop.",
+                  flush=True)
         try:
             server.serve_forever()
         except KeyboardInterrupt:
