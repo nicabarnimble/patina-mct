@@ -14,8 +14,6 @@ import threading
 import time
 from urllib.parse import urlsplit
 
-from mct_approval_qr import png as qr_png, svg as qr_svg
-
 LIMIT = 96 * 1024
 CODE_SECONDS = 10 * 60
 ROOT = Path(__file__).resolve().parent
@@ -318,6 +316,7 @@ class Broker:
             return value
 
     def display_qr(self, display_id, kind="svg"):
+        from mct_approval_qr import png as qr_png, svg as qr_svg
         with self.lock:
             self.expire()
             job = self.display_job(display_id)
