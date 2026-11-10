@@ -7,9 +7,11 @@ import {createServer as createHttpsServer} from 'node:https';
 import {createServer as createNetServer} from 'node:net';
 import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
+import {pathToFileURL} from 'node:url';
 import {promisify} from 'node:util';
-import {run as runGate} from './pocketid-approval-gate.mjs';
 
+const SOURCE_ROOT = resolve(process.env.MCT_SOURCE_ROOT || join(import.meta.dirname, '..'));
+const {run: runGate} = await import(pathToFileURL(join(SOURCE_ROOT, 'scripts/pocketid-approval-gate.mjs')));
 const exec = promisify(execFile);
 const sleep = milliseconds => new Promise(resolvePromise => setTimeout(resolvePromise, milliseconds));
 
@@ -101,6 +103,41 @@ function idToken(privateKey, claims) {
   return `${input}.${sign('RSA-SHA256', Buffer.from(input), privateKey).toString('base64url')}`;
 }
 
+async function queueContract(origin, field) {
+  const directory = await mkdtemp(join(tmpdir(), 'mct-pocketid-contract-'));
+  const session = join(directory, 'session');
+  await chmod(directory, 0o700);
+  await mkdir(session, {mode: 0o700});
+  try {
+    const probe = `
+import json
+import sys
+sys.path.insert(0, sys.argv[1])
+from passkey_queue import Broker
+broker = Broker(sys.argv[2], sys.argv[3])
+value = broker.rp_id if sys.argv[4] == "rp_id" else broker.cli({"op": "open"})["url"]
+print(json.dumps({sys.argv[4]: value}))
+`;
+    const result = await exec('python3', ['-c', probe, join(SOURCE_ROOT, 'scripts'), session, origin, field],
+      {cwd: SOURCE_ROOT});
+    return JSON.parse(result.stdout);
+  } finally {
+    await rm(directory, {recursive: true, force: true});
+  }
+}
+
+test('hosted queue derives the WebAuthn RP ID from the configured origin', async () => {
+  const contract = await queueContract('https://approval.example.test:8443', 'rp_id');
+  assert.equal(contract.rp_id, 'approval.example.test');
+});
+
+test('one-use capability URL forces a post-login document load', async () => {
+  const contract = await queueContract('https://mct.localhost:8443', 'url');
+  const url = new URL(contract.url);
+  assert.equal(url.pathname, '/approve/');
+  assert.match(url.hash, /^#[A-Za-z0-9_-]{32,}$/);
+});
+
 test('hosted non-localhost login-first ceremony reaches Mother through a headless URL handoff', {timeout: 180000}, async t => {
   const directory = await mkdtemp(join(tmpdir(), 'mct-pocketid-deployment-'));
   const session = join(directory, 'session');
@@ -143,8 +180,9 @@ test('hosted non-localhost login-first ceremony reaches Mother through a headles
     issuerServer.listen(issuerPort, '127.0.0.1');
     await new Promise(resolvePromise => issuerServer.once('listening', resolvePromise));
 
-    queue = spawn('python3', ['scripts/serve-passkey-tap.py', '--session', session,
-      '--origin', origin, '--listen', `127.0.0.1:${queuePort}`, '--cert', cert, '--key', key]);
+    queue = spawn('python3', [join(SOURCE_ROOT, 'scripts/serve-passkey-tap.py'), '--session', session,
+      '--origin', origin, '--listen', `127.0.0.1:${queuePort}`, '--cert', cert, '--key', key],
+    {cwd: SOURCE_ROOT});
     queue.stderr.on('data', data => { queueErrors += data; });
     await eventually(async () => {
       if (queue.exitCode !== null) throw new Error(queueErrors || `queue exited ${queue.exitCode}`);
@@ -241,8 +279,9 @@ test('hosted non-localhost login-first ceremony reaches Mother through a headles
       assert.match(state.state, /Open a fresh authenticated page through the CLI/);
     });
 
-    const opened = await exec('python3', ['scripts/passkey-approve.py', '--session', session, 'open', '--print-url'],
-      {env: {...process.env, BROWSER: '/definitely-no-local-browser'}});
+    const opened = await exec('python3', [join(SOURCE_ROOT, 'scripts/passkey-approve.py'),
+      '--session', session, 'open', '--print-url'],
+    {cwd: SOURCE_ROOT, env: {...process.env, BROWSER: '/definitely-no-local-browser'}});
     const approvalUrl = opened.stdout.trim();
     assert.equal(opened.stderr, '');
     assert.equal(new URL(approvalUrl).origin, origin);
@@ -251,9 +290,9 @@ test('hosted non-localhost login-first ceremony reaches Mother through a headles
     await page('Page.navigate', {url: approvalUrl});
     await page('Page.bringToFront');
 
-    const binary = resolve(process.env.MCT_BINARY || 'target/debug/mct-daemon');
-    demo = spawn('python3', ['scripts/passkey-approval-demo.py', '--session', session,
-      '--directory', runDirectory, '--binary', binary], {detached: true});
+    const binary = resolve(SOURCE_ROOT, process.env.MCT_BINARY || 'target/debug/mct-daemon');
+    demo = spawn('python3', [join(SOURCE_ROOT, 'scripts/passkey-approval-demo.py'), '--session', session,
+      '--directory', runDirectory, '--binary', binary], {cwd: SOURCE_ROOT, detached: true});
     demo.stdout.on('data', data => { demoOutput += data; });
     demo.stderr.on('data', data => { demoErrors += data; });
     const finished = new Promise(resolvePromise => demo.once('exit', resolvePromise));
