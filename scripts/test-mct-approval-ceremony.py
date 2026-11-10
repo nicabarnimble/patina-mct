@@ -195,6 +195,14 @@ class CeremonyAcceptanceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "displayed request"):
             self.broker.cli({"op": "publish", "id": job["id"], "prepared": prepared(changed)})
 
+    def test_publish_rejects_signed_bootstrap_without_inventory_hash(self):
+        action = {"action": "bootstrap", "root": passkey_root()}
+        displayed = grant_request_from_action("Unraid Grok", "unraid-mother", action)
+        job = self.enqueue(displayed)
+        self.broker.claim(job["token"], "nicabar")
+        with self.assertRaisesRegex(ValueError, "displayed request"):
+            self.broker.cli({"op": "publish", "id": job["id"], "prepared": prepared(action)})
+
     def test_publish_rejects_unknown_signed_action_fields(self):
         action = {"action": "issue_day_key", "grant_id": "day-new",
                   "public_half": {"scheme": "ed25519", "public_key": "22" * 32},
