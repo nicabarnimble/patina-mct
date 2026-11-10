@@ -60,6 +60,7 @@ run_specs() {
   python3 scripts/test-passkey-tap.py || status=1
   python3 scripts/test-passkey-queue.py || status=1
   python3 scripts/test-mother-systemd.py || status=1
+  python3 scripts/test-prepush.py || status=1
   python3 scripts/test-ci-tier0.py || status=1
   bash scripts/test-container-package.sh || status=1
   return "$status"
