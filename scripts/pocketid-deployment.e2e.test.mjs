@@ -79,6 +79,15 @@ async function click(page, selector) {
   await page('Input.dispatchMouseEvent', {type: 'mousePressed', button: 'left', clickCount: 1, ...point});
   await page('Input.dispatchMouseEvent', {type: 'mouseReleased', button: 'left', clickCount: 1, ...point});
 }
+async function waitForDocumentReady(page, expectedOrigin) {
+  await eventually(async () => {
+    const evaluated = await page('Runtime.evaluate', {
+      expression: '({readyState:document.readyState,origin:location.origin})', returnByValue: true,
+    });
+    assert.equal(evaluated.exceptionDetails, undefined, JSON.stringify(evaluated));
+    assert.deepEqual(evaluated.result.value, {readyState: 'complete', origin: expectedOrigin});
+  });
+}
 async function scanAndSignIn(page, url) {
   await page('Page.navigate', {url}); await page('Page.bringToFront');
   await eventually(async () => {
@@ -174,10 +183,14 @@ test('hosted non-localhost QR flows complete one Mother grant and one NIC-132 pr
     const socket = new WebSocket(`ws://127.0.0.1:${debugPort}${socketPath}`); await new Promise((ok, fail) => { socket.addEventListener('open', ok, {once:true}); socket.addEventListener('error', fail, {once:true}); });
     cdp = new CDP(socket); const {targetId} = await cdp.call('Target.createTarget', {url: `${origin}/tokens.css`});
     const {sessionId} = await cdp.call('Target.attachToTarget', {targetId, flatten: true}); const page = (method, params={}) => cdp.call(method, params, sessionId);
-    await page('Page.enable'); await page('WebAuthn.enable', {enableUI: false});
+    await page('Page.enable');
+    await waitForDocumentReady(page, origin);
+    await page('WebAuthn.enable', {enableUI: false});
     await page('WebAuthn.addVirtualAuthenticator', {options: {protocol: 'ctap2', transport: 'internal', hasResidentKey: true,
       hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true}});
     const rootResult = await page('Runtime.evaluate', {expression: `(async()=>JSON.stringify(await (await import('/passkey-admin.mjs')).registerRoot('mct-approval.nicabar.org','nicabar')))()`, awaitPromise: true, returnByValue: true, userGesture: true});
+    assert.equal(rootResult.exceptionDetails, undefined, JSON.stringify(rootResult));
+    assert.equal(typeof rootResult.result.value, 'string', JSON.stringify(rootResult));
     const root = JSON.parse(rootResult.result.value); assert.equal(root.origin, origin); assert.equal(root.rp_id, 'mct-approval.nicabar.org');
     const pin = join(runDirectory, 'registered-root.json'); await writeFile(pin, JSON.stringify(root), {mode: 0o600});
     const binary = resolve(process.env.MCT_BINARY || 'target/debug/mct-daemon');

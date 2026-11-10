@@ -15,6 +15,19 @@ function formatTime(seconds) {
   return new Intl.DateTimeFormat('en-US', {hour: 'numeric', minute: '2-digit', timeZoneName: 'short'}).format(new Date(seconds * 1000));
 }
 function remaining(deadline) { return Math.max(0, Math.ceil((deadline - Date.now() / 1000) / 60)); }
+function formatGrantEnd(value, now) {
+  if (value === 'On approval') return {duration: 'On approval', deadline: ''};
+  const expiry = Date.parse(value);
+  if (!Number.isFinite(expiry)) return {duration: 'Invalid expiry', deadline: ''};
+  const milliseconds = Math.max(0, expiry - now);
+  const hours = Math.floor(milliseconds / 3_600_000);
+  const duration = milliseconds > 0 && hours === 0 ? '<1 h more' : `${hours} h more`;
+  const deadline = new Intl.DateTimeFormat('en-US', {
+    weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+    hour12: true, timeZone: 'America/New_York',
+  }).format(new Date(expiry)).replace(/^([^,]+),/, '$1') + ' ET';
+  return {duration, deadline};
+}
 function shell(content, {title, token = '', phase = '', revision = 0, csrf = '', kind = '', subject = ''}) {
   return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="color-scheme" content="light dark"><title>${esc(title)}</title><link rel="stylesheet" href="/tokens.css"><link rel="stylesheet" href="/approval.css"><style>html,body{height:100%;background:var(--bg)}body{display:flex;flex-direction:column;position:relative;max-width:430px;margin:0 auto}</style></head><body data-token="${esc(token)}" data-phase="${esc(phase)}" data-revision="${esc(revision)}" data-csrf="${esc(csrf)}" data-kind="${esc(kind)}" data-subject="${esc(subject)}">${content}<script type="module" src="/approval-client.mjs"></script></body></html>`;
 }
@@ -29,20 +42,24 @@ function loading(state, token, csrf) {
   const proof = state.kind === 'proof';
   return shell(`<main class="page" id="approval">${head(state.code, state.subject)}<div class="lede" role="status"><h1>You’re signed in</h1><p>Nothing has been ${proof ? 'checked' : 'approved'}. Loading the request so you can check it…</p></div><div class="skeleton" aria-hidden="true"><i class="tall"></i><i class="m"></i><i></i><i class="s"></i><i class="m"></i><i class="s"></i></div><footer class="page-foot"><p class="fine">This code expires in ${remaining(state.deadline)} min.</p></footer></main>`, {title: 'MCT approval · Back from sign-in', token, phase: state.phase, revision: state.revision, csrf, kind: state.kind, subject: state.subject});
 }
-function grantReview(state, token, csrf, cancelled) {
+function grantReview(state, token, csrf, cancelled, now) {
   const request = state.request;
   const rows = request.permissions.map(item => `<li><b>${esc(item.name)}</b><span>${esc(item.description)}</span></li>`).join('');
+  const grantEnd = formatGrantEnd(request.grant_ends_at, now);
+  const deadline = grantEnd.deadline ? `<span>until ${esc(grantEnd.deadline)}</span>` : '';
   const notice = cancelled ? `<div class="notice" role="status">${icons.alert}<span><b>Passkey cancelled.</b> Nothing was approved. Try again when you’re ready.</span></div>` : '';
-  return shell(`<main class="page" id="approval">${head(state.code, state.subject)}<section class="request" aria-label="What you are approving"><p class="req-who">${esc(request.asker)} wants to use</p><h1 class="req-mother">${esc(request.mother)}</h1><h2 class="req-label">It will be able to</h2><ul class="perms">${rows}</ul><dl class="req-meta"><dt>For</dt><dd><b>Until</b><span>${esc(request.grant_ends_at)}</span></dd><dt>Asked</dt><dd>${formatTime(state.created_at)}</dd></dl></section><footer class="page-foot">${notice}<p class="step">Step 2 of 2 · Approve</p><button class="btn btn-approve" id="approve">${icons.key}<span>Approve with MCT passkey</span></button><button class="btn btn-quiet" id="decline">Decline</button><p class="fine">Your MCT passkey in 1Password signs exactly what’s above.<br>Code expires in ${remaining(state.deadline)} min</p></footer></main>`, {title: 'MCT approval · Review', token, phase: state.phase, revision: state.revision, csrf, kind: state.kind, subject: state.subject});
+  return shell(`<main class="page" id="approval">${head(state.code, state.subject)}<section class="request" aria-label="What you are approving"><p class="req-who">${esc(request.asker)} wants to use</p><h1 class="req-mother">${esc(request.mother)}</h1><h2 class="req-label">It will be able to</h2><ul class="perms">${rows}</ul><dl class="req-meta"><dt>For</dt><dd><b>${esc(grantEnd.duration)}</b>${deadline}</dd><dt>Asked</dt><dd>${formatTime(state.created_at)}</dd></dl></section><footer class="page-foot">${notice}<p class="step">Step 2 of 2 · Approve</p><button class="btn btn-approve" id="approve">${icons.key}<span>Approve with MCT passkey</span></button><button class="btn btn-quiet" id="decline">Decline</button><p class="fine">Your MCT passkey in 1Password signs exactly what’s above.<br>Code expires in ${remaining(state.deadline)} min</p></footer></main>`, {title: 'MCT approval · Review', token, phase: state.phase, revision: state.revision, csrf, kind: state.kind, subject: state.subject});
 }
 function proofReview(state, token, csrf) {
   const r = state.request;
   return shell(`<main class="page" id="approval">${head(state.code, state.subject)}<section class="request" aria-label="What you are checking"><h1 class="proof-h">Confirm you can open ${esc(r.title)} on ${esc(r.site)}</h1><div class="doc">${icons.file}<div><b>${esc(r.title)}</b><span class="mono">${esc(r.site + r.path)}</span></div></div><dl class="req-meta"><dt>Asked by</dt><dd><b>${esc(r.asker)}</b><span>${formatTime(state.created_at)}</span></dd><dt>Why</dt><dd>${esc(r.why)}</dd></dl><p class="proof-safe">${icons.ok}<span>This only checks that you can open it. The bot won’t get your sign-in or a copy of the file.</span></p></section><footer class="page-foot"><p class="step">Step 2 of 2 · Check</p><button class="btn btn-check" id="check">${icons.file}<span>Check I can open it</span></button><button class="btn btn-quiet" id="skip">Not now</button><p class="fine">You’ll pass through ${esc(r.site)} for a moment and come right back.<br>This code expires in ${remaining(state.deadline)} min.</p></footer></main>`, {title: 'MCT approval · Review · access proof', token, phase: state.phase, revision: state.revision, csrf, kind: state.kind, subject: state.subject});
 }
-function result(state, token, csrf) {
+function result(state, token, csrf, now) {
   const r = state.request || {};
+  const grantEnd = formatGrantEnd(r.grant_ends_at, now);
+  const approvedEnd = grantEnd.deadline || grantEnd.duration;
   const map = {
-    approved: ['ok', icons.ok, 'Approved', `<b>${esc(r.asker)}</b> can use <b class="mono">${esc(r.mother)}</b> until <b>${esc(r.grant_ends_at)}</b>.`, 'The bot has been told. You can close this page.'],
+    approved: ['ok', icons.ok, 'Approved', `<b>${esc(r.asker)}</b> can use <b class="mono">${esc(r.mother)}</b> until <b>${esc(approvedEnd)}</b>.`, 'The bot has been told. You can close this page.'],
     declined: ['muted', icons.stop, 'Declined', `<b>${esc(r.asker)}</b> won’t get access to <b class="mono">${esc(r.mother)}</b>. Nothing changed.`, 'The bot has been told. You can close this page.'],
     passed: ['ok', icons.ok, 'You can open it', `<b>${esc(r.asker)}</b> has been told. It got a pass, not your sign-in or the file.`, 'You can close this page.'],
     failed: ['stop', icons.shield, 'You can’t open it', state.reason === 'not_found' ? `${esc(r.title)} isn’t on ${esc(r.site)} at that address. Nothing was shared, and <b>${esc(r.asker)}</b> has been told it failed.` : `${esc(r.site)} wouldn’t let <b>nicabar</b> open ${esc(r.title)}. Nothing was shared, and <b>${esc(r.asker)}</b> has been told it failed.`, `Ask ${esc(r.asker)} for a new code once it’s fixed.`],
@@ -55,14 +72,14 @@ function result(state, token, csrf) {
   return shell(`<main class="page" id="approval"><header class="page-head"><span class="product">MCT approval</span><span class="who">${state.subject ? `Signed in as ${esc(state.subject)}` : ''}</span></header><section class="result" role="${['failed','expired','refused'].includes(state.phase) ? 'alert' : 'status'}"><span class="result-glyph ${klass}">${glyph}</span><h1>${heading}</h1><p>${body}</p><p>${next}</p><dl class="recap"><dt>Code</dt><dd><span class="mono">${esc(state.code)}</span> ${state.phase === 'expired' ? 'is dead' : 'is now used up'}</dd>${state.decided_at ? `<dt>At</dt><dd>${formatTime(state.decided_at)}</dd>` : ''}</dl></section>${view}</main>`, {title: `MCT approval · ${heading}`, token, phase: state.phase, revision: state.revision, csrf, kind: state.kind, subject: state.subject});
 }
 
-export function renderPhone(state, {token, csrf = '', wrong = false, cancelled = false} = {}) {
+export function renderPhone(state, {token, csrf = '', wrong = false, cancelled = false, now = Date.now()} = {}) {
   if (wrong) return shell(`<main class="page" id="approval">${head(state.code, 'another account', false)}<section class="result" role="alert" style="padding-top:22px"><span class="result-glyph wait">${icons.user}</span><h1>This request is for nicabar</h1><p>You’re signed in as <b>another account</b>. Only nicabar can ${state.kind === 'proof' ? 'do this check' : 'approve MCT requests'}. Nothing was approved.</p></section><footer class="page-foot"><a class="btn btn-signin" href="/a/${esc(token)}/login?switch=1">${icons.user}<span>Sign in as nicabar</span></a></footer></main>`, {title: 'MCT approval · Signed in as someone else', token, phase: 'wrong', kind: state.kind});
   if (!state.subject && state.phase === 'waiting') return pending(state, token);
   if (state.phase === 'opened' && state.kind === 'grant') return loading(state, token, csrf);
-  if (state.phase === 'prepared') return grantReview(state, token, csrf, cancelled);
+  if (state.phase === 'prepared') return grantReview(state, token, csrf, cancelled, now);
   if (state.phase === 'opened' && state.kind === 'proof') return proofReview(state, token, csrf);
   if (state.phase === 'signed') return loading({...state, phase: 'signed'}, token, csrf);
-  return result(state, token, csrf);
+  return result(state, token, csrf, now);
 }
 
 export function renderDisplay(state) {

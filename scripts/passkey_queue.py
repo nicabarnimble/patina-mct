@@ -1,5 +1,6 @@
 """Loopback-only approval queue. It stores no MCT root private key and invokes no subprocess."""
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -97,19 +98,25 @@ GRANT_SCOPE_PRESENTATIONS = {
 }
 
 
-def grant_request_from_action(asker, mother, action):
+def grant_request_from_action(asker, mother, action, signed=False):
     if not isinstance(action, dict):
         raise ValueError("invalid grant action")
     kind = action.get("action")
     if kind == "bootstrap":
+        allowed = exact(action, ("action", "root", "inventory_hash")) if signed else (
+            exact(action, ("action", "root")) or exact(action, ("action", "root", "inventory_hash")))
         root = action.get("root")
-        if not isinstance(root, dict):
-            raise ValueError("invalid passkey root")
-        fingerprint = hashlib.sha256(encoded(root)).hexdigest()[:16]
+        if not allowed or not exact(root, ("credential_id", "public_key_sec1", "rp_id", "origin")):
+            raise ValueError("invalid passkey root action")
+        if signed:
+            text(action.get("inventory_hash"), "inventory hash", 256)
+        fingerprint = hashlib.sha256(encoded(root)).hexdigest()
         permissions = [{"name": "Establish passkey administration",
                         "description": "Trust passkey root sha256:" + fingerprint + " as the independent administrator"}]
         grant_end = "On approval"
     elif kind == "issue_day_key":
+        if not exact(action, ("action", "grant_id", "public_half", "scopes", "expires_at")):
+            raise ValueError("invalid day-key issue action")
         grant_id = text(action.get("grant_id"), "grant id", 128)
         scopes = action.get("scopes")
         if (not isinstance(scopes, list) or not scopes
@@ -118,14 +125,22 @@ def grant_request_from_action(asker, mother, action):
                 or any(scope not in GRANT_SCOPE_PRESENTATIONS for scope in scopes)):
             raise ValueError("invalid day-key scopes")
         public_half = action.get("public_half")
-        if not isinstance(public_half, dict):
+        if (not exact(public_half, ("scheme", "public_key"))
+                or public_half.get("scheme") != "ed25519"):
             raise ValueError("invalid day-key public half")
-        fingerprint = hashlib.sha256(encoded(public_half)).hexdigest()[:16]
+        fingerprint = hashlib.sha256(encoded(public_half)).hexdigest()
         permissions = [{"name": "Issue day key",
                         "description": "Issue grant " + grant_id + " to key sha256:" + fingerprint}]
         permissions.extend(dict(GRANT_SCOPE_PRESENTATIONS[scope]) for scope in scopes)
         grant_end = text(action.get("expires_at"), "grant end", 64)
+        try:
+            if datetime.fromisoformat(grant_end.replace("Z", "+00:00")).tzinfo is None:
+                raise ValueError
+        except ValueError:
+            raise ValueError("invalid grant end") from None
     elif kind == "revoke_day_key":
+        if not exact(action, ("action", "grant_id")):
+            raise ValueError("invalid day-key revoke action")
         grant_id = text(action.get("grant_id"), "grant id", 128)
         permissions = [{"name": "Revoke day key", "description": "End access for " + grant_id}]
         grant_end = "On approval"
@@ -308,7 +323,7 @@ class Broker:
                     root = prepared["root"]
                     intent = prepared["intent"]
                     displayed = grant_request_from_action(job.request["asker"], intent["mother_node_id"],
-                                                          intent["action"])
+                                                          intent["action"], signed=True)
                     matches = (root["origin"] == self.origin and root["rp_id"] == self.rp_id
                                and encoded(displayed) == encoded(job.request))
                 except (KeyError, TypeError, ValueError):
