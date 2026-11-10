@@ -9,6 +9,7 @@ import {
   signEnvelope,
   terminalOutcome,
 } from './mct-approval-protocol.mjs';
+import {renderPhone} from './mct-approval-view.mjs';
 
 test('authoritative packet CSS and Datastar assets remain byte-for-byte pinned', async () => {
   for (const [path, expected] of [
@@ -16,6 +17,23 @@ test('authoritative packet CSS and Datastar assets remain byte-for-byte pinned',
     ['scripts/mct-approval/approval.css', '11f341415db53670a0e9e369ce2c13554abe333d21d97b56576f8a73d89e6db5'],
     ['scripts/mct-approval/datastar.js', '727844adfc825ee651fb93c544a2a739986f9a21820a94524b35f0cac470cf91'],
   ]) assert.equal(createHash('sha256').update(await readFile(path)).digest('hex'), expected, path);
+});
+
+test('phone renders issue expiry as hours left and an ET deadline', () => {
+  const state = {
+    id: 'job', code: 'K7-QP', kind: 'grant', phase: 'prepared', revision: 1,
+    created_at: Date.parse('2026-11-09T11:48:00Z') / 1000,
+    deadline: Date.parse('2026-11-09T11:58:00Z') / 1000,
+    subject: 'nicabar',
+    request: {
+      kind: 'grant', asker: 'Unraid Grok', mother: 'unraid-mother',
+      permissions: [{name: 'Read Mother status', description: 'See current governed runtime status'}],
+      grant_ends_at: '2026-11-10T11:00:00Z',
+    },
+  };
+  const html = renderPhone(state, {token: 'capability-token', csrf: 'csrf', now: Date.parse('2026-11-09T11:48:00Z')});
+  assert.match(html, /<b>23 h more<\/b><span>until Tue Nov 10, 6:00 AM ET<\/span>/);
+  assert.doesNotMatch(html, /2026-11-10T11:00:00Z/);
 });
 
 const approvalKeys = generateKeyPairSync('ed25519');
@@ -76,6 +94,13 @@ test('expired proof is refused and consumes the code', () => {
   const verifier = new ProofResultVerifier(request, wikiKeys.publicKey);
   const expired = signEnvelope(result({iat: 900, exp: 960}), wikiKeys.privateKey);
   assert.deepEqual(verifier.accept(expired, 1_010), {phase: 'refused', reason: 'expired'});
+  assert.equal(verifier.consumed, true);
+});
+
+test('proof result with the wrong nonce is refused and consumed', () => {
+  const verifier = new ProofResultVerifier(request, wikiKeys.publicKey);
+  const signed = signEnvelope(result({nonce: 'wrong-nonce'}), wikiKeys.privateKey);
+  assert.deepEqual(verifier.accept(signed, 1_010), {phase: 'refused', reason: 'mismatch'});
   assert.equal(verifier.consumed, true);
 });
 

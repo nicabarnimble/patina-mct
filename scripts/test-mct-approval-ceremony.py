@@ -63,7 +63,7 @@ def proof_request():
     }
 
 
-def prepared(action=None):
+def prepared(action=None, mother="unraid-mother"):
     return {
         "root": {
             "credential_id": "AQID",
@@ -73,7 +73,7 @@ def prepared(action=None):
         },
         "challenge": "challenge",
         "intent": {
-            "mother_node_id": "unraid-mother",
+            "mother_node_id": mother,
             "ledger_id": "ledger",
             "epoch": "epoch",
             "generation": 1,
@@ -132,7 +132,7 @@ class CeremonyAcceptanceTests(unittest.TestCase):
 
     def test_publish_rejects_all_wysiwys_mismatches(self):
         issue_24h = {"action": "issue_day_key", "grant_id": "day-new",
-                     "public_half": {"scheme": "ed25519-day-key/v1", "public_key": "22" * 32},
+                     "public_half": {"scheme": "ed25519", "public_key": "22" * 32},
                      "scopes": ["status", "key_manage"],
                      "expires_at": "2026-11-10T10:00:00Z"}
         mismatches = [
@@ -149,17 +149,53 @@ class CeremonyAcceptanceTests(unittest.TestCase):
 
     def test_matching_issue_receipt_is_derived_from_the_signed_action(self):
         action = {"action": "issue_day_key", "grant_id": "day-new",
-                  "public_half": {"scheme": "ed25519-day-key/v1", "public_key": "22" * 32},
+                  "public_half": {"scheme": "ed25519", "public_key": "22" * 32},
                   "scopes": ["status", "key_manage"],
                   "expires_at": "2026-11-10T10:00:00Z"}
         displayed = grant_request_from_action("Unraid Grok", "unraid-mother", action)
         self.assertEqual(displayed["grant_ends_at"], action["expires_at"])
         self.assertIn("day-new", displayed["permissions"][0]["description"])
-        self.assertIn("sha256:", displayed["permissions"][0]["description"])
+        self.assertRegex(displayed["permissions"][0]["description"], r"sha256:[0-9a-f]{64}$")
         job = self.enqueue(displayed)
         self.broker.claim(job["token"], "nicabar")
         result = self.broker.cli({"op": "publish", "id": job["id"], "prepared": prepared(action)})
         self.assertEqual(result["phase"], "prepared")
+
+    def test_publish_rejects_mutations_of_a_real_derived_receipt(self):
+        action = {"action": "issue_day_key", "grant_id": "day-new",
+                  "public_half": {"scheme": "ed25519", "public_key": "22" * 32},
+                  "scopes": ["status", "key_manage"],
+                  "expires_at": "2026-11-10T10:00:00Z"}
+        displayed = grant_request_from_action("Unraid Grok", "unraid-mother", action)
+        mutations = [
+            ("day key", prepared(dict(action, grant_id="another-day"))),
+            ("scopes", prepared(dict(action, scopes=["status"]))),
+            ("Mother", prepared(action, mother="another-mother")),
+        ]
+        for name, changed in mutations:
+            with self.subTest(name=name):
+                job = self.enqueue(displayed)
+                self.broker.claim(job["token"], "nicabar")
+                with self.assertRaisesRegex(ValueError, "displayed request"):
+                    self.broker.cli({"op": "publish", "id": job["id"], "prepared": changed})
+
+    def test_publish_rejects_unknown_signed_action_fields(self):
+        action = {"action": "issue_day_key", "grant_id": "day-new",
+                  "public_half": {"scheme": "ed25519", "public_key": "22" * 32},
+                  "scopes": ["status"], "expires_at": "2026-11-10T10:00:00Z"}
+        displayed = grant_request_from_action("Unraid Grok", "unraid-mother", action)
+        job = self.enqueue(displayed)
+        self.broker.claim(job["token"], "nicabar")
+        with self.assertRaisesRegex(ValueError, "displayed request"):
+            self.broker.cli({"op": "publish", "id": job["id"],
+                             "prepared": prepared(dict(action, unexpected=True))})
+
+    def test_duplicate_scopes_are_not_a_grant_action(self):
+        action = {"action": "issue_day_key", "grant_id": "day-new",
+                  "public_half": {"scheme": "ed25519", "public_key": "22" * 32},
+                  "scopes": ["status", "status"], "expires_at": "2026-11-10T10:00:00Z"}
+        with self.assertRaisesRegex(ValueError, "day-key scopes"):
+            grant_request_from_action("Unraid Grok", "unraid-mother", action)
 
     def test_tampered_grant_is_refused_and_consumed(self):
         job = self.enqueue(grant_request())
