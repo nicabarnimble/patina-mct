@@ -2,6 +2,13 @@
 set -uo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+
+# Git exports repository-local variables to hooks. Clear them before any nested
+# test creates a scratch repository, or its commits can mutate the caller.
+while IFS= read -r variable; do
+  [[ -n $variable ]] && unset "$variable"
+done < <(git rev-parse --local-env-vars)
+
 cd "$repo_root"
 
 classify_direct_updates() {
