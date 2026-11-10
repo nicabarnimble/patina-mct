@@ -9,6 +9,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "scripts" / "prepush.sh"
+INSTALLER = ROOT / "scripts" / "install-git-hooks.sh"
 
 
 class PrepushEnvironmentTests(unittest.TestCase):
@@ -76,6 +77,66 @@ class PrepushEnvironmentTests(unittest.TestCase):
                     ["git", "status", "--porcelain"], cwd=sentinel, text=True
                 ),
                 "",
+            )
+
+
+class HookInstallerTests(unittest.TestCase):
+    def repository(self, root: Path) -> None:
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "git@example.test:repo.git"],
+            cwd=root,
+            check=True,
+        )
+        scripts = root / "scripts"
+        scripts.mkdir()
+        (scripts / "install-git-hooks.sh").write_text(
+            INSTALLER.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+
+    def test_installer_keeps_long_ssh_pushes_alive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.repository(root)
+            subprocess.run(
+                ["bash", "scripts/install-git-hooks.sh"], cwd=root, check=True
+            )
+            self.assertEqual(
+                subprocess.check_output(
+                    ["git", "config", "--local", "--get", "core.hooksPath"],
+                    cwd=root,
+                    text=True,
+                ).strip(),
+                ".githooks",
+            )
+            self.assertEqual(
+                subprocess.check_output(
+                    ["git", "config", "--local", "--get", "core.sshCommand"],
+                    cwd=root,
+                    text=True,
+                ).strip(),
+                "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=120",
+            )
+
+    def test_installer_preserves_an_existing_ssh_command(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.repository(root)
+            subprocess.run(
+                ["git", "config", "--local", "core.sshCommand", "custom-ssh"],
+                cwd=root,
+                check=True,
+            )
+            subprocess.run(
+                ["bash", "scripts/install-git-hooks.sh"], cwd=root, check=True
+            )
+            self.assertEqual(
+                subprocess.check_output(
+                    ["git", "config", "--local", "--get", "core.sshCommand"],
+                    cwd=root,
+                    text=True,
+                ).strip(),
+                "custom-ssh",
             )
 
 
