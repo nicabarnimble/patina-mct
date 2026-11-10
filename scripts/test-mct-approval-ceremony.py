@@ -50,6 +50,15 @@ def bootstrap_request():
     }
 
 
+def passkey_root(fill="11", credential_id="AQID"):
+    return {
+        "credential_id": credential_id,
+        "public_key_sec1": "04" + fill * 64,
+        "rp_id": "mct-approval.nicabar.org",
+        "origin": ORIGIN,
+    }
+
+
 def proof_request():
     return {
         "kind": "proof",
@@ -65,12 +74,7 @@ def proof_request():
 
 def prepared(action=None, mother="unraid-mother"):
     return {
-        "root": {
-            "credential_id": "AQID",
-            "public_key_sec1": "04" + "11" * 64,
-            "rp_id": "mct-approval.nicabar.org",
-            "origin": ORIGIN,
-        },
+        "root": passkey_root(),
         "challenge": "challenge",
         "intent": {
             "mother_node_id": mother,
@@ -168,7 +172,9 @@ class CeremonyAcceptanceTests(unittest.TestCase):
                   "expires_at": "2026-11-10T10:00:00Z"}
         displayed = grant_request_from_action("Unraid Grok", "unraid-mother", action)
         mutations = [
-            ("day key", prepared(dict(action, grant_id="another-day"))),
+            ("grant id", prepared(dict(action, grant_id="another-day"))),
+            ("day key public half", prepared(dict(
+                action, public_half={"scheme": "ed25519", "public_key": "33" * 32}))),
             ("scopes", prepared(dict(action, scopes=["status"]))),
             ("Mother", prepared(action, mother="another-mother")),
         ]
@@ -179,10 +185,29 @@ class CeremonyAcceptanceTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "displayed request"):
                     self.broker.cli({"op": "publish", "id": job["id"], "prepared": changed})
 
+    def test_publish_rejects_bootstrap_root_swap(self):
+        action = {"action": "bootstrap", "root": passkey_root()}
+        displayed = grant_request_from_action("Unraid Grok", "unraid-mother", action)
+        changed = {"action": "bootstrap", "root": passkey_root("22", "BAUG"),
+                   "inventory_hash": "33" * 32}
+        job = self.enqueue(displayed)
+        self.broker.claim(job["token"], "nicabar")
+        with self.assertRaisesRegex(ValueError, "displayed request"):
+            self.broker.cli({"op": "publish", "id": job["id"], "prepared": prepared(changed)})
+
     def test_publish_rejects_unknown_signed_action_fields(self):
         action = {"action": "issue_day_key", "grant_id": "day-new",
                   "public_half": {"scheme": "ed25519", "public_key": "22" * 32},
                   "scopes": ["status"], "expires_at": "2026-11-10T10:00:00Z"}
+        displayed = grant_request_from_action("Unraid Grok", "unraid-mother", action)
+        job = self.enqueue(displayed)
+        self.broker.claim(job["token"], "nicabar")
+        with self.assertRaisesRegex(ValueError, "displayed request"):
+            self.broker.cli({"op": "publish", "id": job["id"],
+                             "prepared": prepared(dict(action, unexpected=True))})
+
+    def test_publish_rejects_revoke_with_extra_field(self):
+        action = {"action": "revoke_day_key", "grant_id": "day"}
         displayed = grant_request_from_action("Unraid Grok", "unraid-mother", action)
         job = self.enqueue(displayed)
         self.broker.claim(job["token"], "nicabar")

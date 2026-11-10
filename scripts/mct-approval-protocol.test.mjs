@@ -19,11 +19,12 @@ test('authoritative packet CSS and Datastar assets remain byte-for-byte pinned',
   ]) assert.equal(createHash('sha256').update(await readFile(path)).digest('hex'), expected, path);
 });
 
-test('phone renders issue expiry as hours left and an ET deadline', () => {
-  const state = {
-    id: 'job', code: 'K7-QP', kind: 'grant', phase: 'prepared', revision: 1,
+function issueState(phase) {
+  return {
+    id: 'job', code: 'K7-QP', kind: 'grant', phase, revision: 1,
     created_at: Date.parse('2026-11-09T11:48:00Z') / 1000,
     deadline: Date.parse('2026-11-09T11:58:00Z') / 1000,
+    decided_at: Date.parse('2026-11-09T11:53:00Z') / 1000,
     subject: 'nicabar',
     request: {
       kind: 'grant', asker: 'Unraid Grok', mother: 'unraid-mother',
@@ -31,8 +32,19 @@ test('phone renders issue expiry as hours left and an ET deadline', () => {
       grant_ends_at: '2026-11-10T11:00:00Z',
     },
   };
-  const html = renderPhone(state, {token: 'capability-token', csrf: 'csrf', now: Date.parse('2026-11-09T11:48:00Z')});
+}
+
+const issueNow = Date.parse('2026-11-09T11:48:00Z');
+
+test('phone renders issue expiry as hours left and an ET deadline', () => {
+  const html = renderPhone(issueState('prepared'), {token: 'capability-token', csrf: 'csrf', now: issueNow});
   assert.match(html, /<b>23 h more<\/b><span>until Tue Nov 10, 6:00 AM ET<\/span>/);
+  assert.doesNotMatch(html, /2026-11-10T11:00:00Z/);
+});
+
+test('approved result keeps the formatted ET deadline instead of raw UTC', () => {
+  const html = renderPhone(issueState('approved'), {token: 'capability-token', csrf: 'csrf', now: issueNow});
+  assert.match(html, /can use <b class="mono">unraid-mother<\/b> until <b>Tue Nov 10, 6:00 AM ET<\/b>/);
   assert.doesNotMatch(html, /2026-11-10T11:00:00Z/);
 });
 
