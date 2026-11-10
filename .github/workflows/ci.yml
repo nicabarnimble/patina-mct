@@ -58,16 +58,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Setup Rust
         uses: ./.github/actions/setup-rust
+        with:
+          install-audit: "true"
 
       - name: Disk budget before tests
         run: df -h . "$RUNNER_TEMP"
 
-      - name: cargo test
-        run: bash scripts/ci-tier0.sh test
+      - name: Pre-push gate
+        env:
+          MCT_PUSH_ROUTE: ${{ github.event_name == 'pull_request' && 'pr' || 'ci' }}
+          MCT_PUSH_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          MCT_PUSH_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash scripts/prepush.sh
 
       - name: Federation controller unit tests
         run: node --test scripts/federation/*.test.mjs
@@ -77,9 +84,6 @@ jobs:
 
       - name: Browser passkey approval ceremony
         run: node --test scripts/passkey-approval.e2e.test.mjs
-
-      - name: Release deployment composition
-        run: bash scripts/check-deploy-together.sh
 
       - name: Disk budget after tests
         if: always()
