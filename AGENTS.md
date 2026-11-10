@@ -12,6 +12,15 @@ names: Slate is Slate, and a future belief-centered Patina would be Patina
 operating as an `mctChild`. Follow the verb discipline and full convention in
 [`layer/core/migration-vocabulary.md`](layer/core/migration-vocabulary.md).
 
+## Correction Rule Table
+
+| Rule | Enforced by |
+|---|---|
+| Release identity comes from `[workspace.package].version`; member crates inherit it and packaging receives it as data. | `scripts/check-release-version.sh`, `scripts/check-container-package.sh`, and `scripts/test-container-package.sh`. |
+| The hosted approval origin owns the WebAuthn RP ID. No independent RP-ID setting is supported. | `Broker` in `scripts/passkey_queue.py` and the `hosted queue derives the WebAuthn RP ID` deployment regression. |
+| A merge candidate must build the release Mother and run Mother, approval queue, OIDC gate, browser, and headless CLI together. | `scripts/check-deploy-together.sh` in the branch-protected `test` pull-request job. |
+| A correction exception must carry an inline reason, expiry, and human approval. | `.cursor/skills/correct/SKILL.md` and PR review only; human approval authority cannot be inferred safely by repository code. |
+
 <!-- PATINA:START -->
 ## Patina
 

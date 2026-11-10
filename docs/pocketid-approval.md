@@ -149,7 +149,15 @@ without the OIDC gate. They could not detect a queue RP hardcode, a local-browse
 CLI assumption, or loss of a fragment when the login landing page reused the same
 path. The hosted-topology regression below composes the real queue, headless CLI,
 gate, mocked OIDC redirect, virtual WebAuthn browser and Mother verification so
-those boundaries fail together.
+those boundaries fail together. The required pre-merge command builds the
+release Mother with Cargo offline and runs that composition as the current user.
+CI invokes the same command after priming the locked dependency cache:
+
+```sh
+bash scripts/check-deploy-together.sh
+```
+
+The narrower diagnostics remain available:
 
 ```sh
 node --test scripts/passkey-admin.test.mjs scripts/pocketid-approval-gate.test.mjs
