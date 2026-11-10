@@ -157,6 +157,10 @@ current user. CI invokes the same command:
 bash scripts/prepush.sh
 ```
 
+Install the committed hook with `bash scripts/install-git-hooks.sh`. For SSH
+remotes, the installer also adds a repository-local keepalive when no custom
+`core.sshCommand` exists, so the remote cannot expire during the full gate.
+
 The narrower diagnostics remain available, including
 `bash scripts/check-deploy-together.sh`:
 
