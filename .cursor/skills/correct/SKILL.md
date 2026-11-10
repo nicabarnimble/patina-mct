@@ -18,11 +18,12 @@ Correct the class, not only its latest instance.
    4. docs and agent rules only after executable enforcement.
 3. Fix the most frequent class now. Put each independent correction in its own commit.
 4. For every new check, run it against a real past mistake and record the nonzero exit and named failure. Run the same command against the repaired tree and current head and record zero.
-5. Use the same command locally and in CI. A wrapper that runs different proof paths is not the same check.
-6. Keep exceptions on the affected line in this form:
+5. Use `scripts/prepush.sh` locally and in CI. Install `.githooks/pre-push` through `scripts/install-git-hooks.sh`; do not duplicate its gate list elsewhere.
+6. Let `scripts/push-policy.mjs` decide direct-main eligibility. Do not restate or widen its path rules in agent judgment.
+7. Keep exceptions on the affected line in this form:
    `correct-exception: reason=<why>; expires=YYYY-MM-DD; approved-by=@<human>`
    An exception without all three fields is invalid. Repository-wide or permanent exceptions are invalid.
-7. Update the agent instruction rule table. Every written rule names its executable enforcer. If no executable enforcer exists, label the row `review only` and explain why structure cannot express it.
+8. Update the agent instruction rule table. Every written rule names its executable enforcer. If no executable enforcer exists, label the row `review only` and explain why structure cannot express it.
 
 ## Completion report
 

@@ -18,7 +18,10 @@ operating as an `mctChild`. Follow the verb discipline and full convention in
 |---|---|
 | Release identity comes from `[workspace.package].version`; member crates inherit it and packaging receives it as data. | `scripts/check-release-version.sh`, `scripts/check-container-package.sh`, and `scripts/test-container-package.sh`. |
 | The hosted approval origin owns the WebAuthn RP ID. No independent RP-ID setting is supported. | `Broker` in `scripts/passkey_queue.py` and the `hosted queue derives the WebAuthn RP ID` deployment regression. |
-| A merge candidate must build the release Mother and run Mother, approval queue, OIDC gate, browser, and headless CLI together. | `scripts/check-deploy-together.sh` in the branch-protected `test` pull-request job. |
+| Every push runs the normal Tier-0 gates and the composed release deployment check through one command. | `.githooks/pre-push`, installed by `scripts/install-git-hooks.sh`, invokes `scripts/prepush.sh`; the branch-protected `test` job invokes the same command. |
+| Direct main is limited to documentation, Markdown, new tests, and additions-only test extensions. | `scripts/push-policy.mjs` is the sole classifier used by the hook and CI; `scripts/push-policy.test.mjs` covers the lane. |
+| Any path the classifier marks high-risk requires a PR and BOX verification. A direct-main attempt must name the path and say `open a PR`. | `scripts/push-policy.mjs --route direct` refuses the push; `--route pr` reports the BOX requirement in CI. |
+| A merge candidate must build the release Mother and run Mother, approval queue, OIDC gate, browser, and headless CLI together. | `scripts/check-deploy-together.sh`, called only through `scripts/prepush.sh` for the required gate. |
 | A correction exception must carry an inline reason, expiry, and human approval. | `.cursor/skills/correct/SKILL.md` and PR review only; human approval authority cannot be inferred safely by repository code. |
 
 <!-- PATINA:START -->
