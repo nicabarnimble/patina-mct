@@ -54,14 +54,22 @@ class PrepushEnvironmentTests(unittest.TestCase):
                 ["git", "rev-parse", "HEAD"], cwd=sentinel, text=True
             ).strip()
 
+            environment = os.environ.copy()
+            for name in (
+                "MCT_PREPUSH_HOOK",
+                "MCT_PUSH_ROUTE",
+                "MCT_PUSH_BASE",
+                "MCT_PUSH_HEAD",
+            ):
+                environment.pop(name, None)
+            environment.update(
+                GIT_DIR=str(sentinel / ".git"),
+                GIT_WORK_TREE=str(sentinel),
+            )
             result = subprocess.run(
                 ["bash", str(scripts / "prepush.sh")],
                 cwd=root,
-                env={
-                    **os.environ,
-                    "GIT_DIR": str(sentinel / ".git"),
-                    "GIT_WORK_TREE": str(sentinel),
-                },
+                env=environment,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
