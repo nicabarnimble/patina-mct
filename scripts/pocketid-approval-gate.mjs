@@ -1,15 +1,18 @@
 #!/usr/bin/env node
-/** Pocket ID authenticates page access. Only WebAuthn/Mother grants MCT authority. */
-import {createHash, createPublicKey, randomBytes, timingSafeEqual, verify} from 'node:crypto';
+/** Pocket ID reveals one request. Only the MCT passkey and Mother grant MCT authority. */
+import {createHash, createPrivateKey, createPublicKey, randomBytes, timingSafeEqual, verify} from 'node:crypto';
 import {lstat, readFile} from 'node:fs/promises';
 import {request as httpsRequest, createServer} from 'node:https';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import {dirname, join} from 'node:path';
 
+import {makeProofTicket, ProofResultVerifier} from './mct-approval-protocol.mjs';
+import {renderDisplay, renderPhone} from './mct-approval-view.mjs';
+
 const ROOT = dirname(fileURLToPath(import.meta.url));
+const ASSET_ROOT = join(ROOT, 'mct-approval');
 const LIMIT = 96 * 1024;
 const CLOCK_SKEW = 30;
-const API_PATHS = new Set(['/api/session', '/api/next', '/api/complete', '/api/fail', '/api/renew', '/api/release']);
 const random = () => randomBytes(32).toString('base64url');
 const nowSeconds = () => Math.floor(Date.now() / 1000);
 
@@ -26,7 +29,6 @@ function jsonPart(value, label) {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error(`invalid ${label}`);
   return parsed;
 }
-
 function validateTokenHeader(header, allowedAlgorithms) {
   if (!['RS256', 'ES256'].includes(header.alg) || !allowedAlgorithms.has(header.alg)) throw new Error('unsupported ID token algorithm');
   if (header.typ !== undefined && header.typ !== 'JWT') throw new Error('invalid ID token type');
@@ -45,15 +47,11 @@ function matchingJwk(header, jwks) {
   if (keys.length !== 1) throw new Error('ID token key is unavailable or ambiguous');
   return keys[0];
 }
-function validateJwk(header, jwk) {
-  if (jwk.use !== undefined && jwk.use !== 'sig') throw new Error('ID token key is not for signatures');
-  if (jwk.alg !== undefined && jwk.alg !== header.alg) throw new Error('ID token key algorithm mismatch');
-  const expected = header.alg === 'RS256' ? 'RSA' : 'EC';
-  if (jwk.kty !== expected) throw new Error('ID token key type mismatch');
-}
 function verificationKey(header, jwks) {
   const jwk = matchingJwk(header, jwks);
-  validateJwk(header, jwk);
+  if (jwk.use !== undefined && jwk.use !== 'sig') throw new Error('ID token key is not for signatures');
+  if (jwk.alg !== undefined && jwk.alg !== header.alg) throw new Error('ID token key algorithm mismatch');
+  if (jwk.kty !== (header.alg === 'RS256' ? 'RSA' : 'EC')) throw new Error('ID token key type mismatch');
   return createPublicKey({key: jwk, format: 'jwk'});
 }
 function verifyTokenSignature(parsed, key) {
@@ -72,95 +70,85 @@ function verifyTimes(claims, now) {
   if (!Number.isInteger(claims.iat) || claims.iat > now + CLOCK_SKEW) throw new Error('future ID token issue time');
   if (claims.nbf !== undefined && (!Number.isInteger(claims.nbf) || claims.nbf > now + CLOCK_SKEW)) throw new Error('ID token not yet valid');
 }
-function verifyIdentity(claims, {issuer, nonce, allowedSubjects}) {
-  if (claims.iss !== issuer) throw new Error('wrong ID token issuer');
-  if (claims.nonce !== nonce) throw new Error('wrong ID token nonce');
-  if (typeof claims.sub !== 'string' || !claims.sub || !allowedSubjects.has(claims.sub)) throw new Error('unauthorized ID token subject');
-}
-export function verifyIdToken(token, {issuer, clientId, nonce, allowedSubjects, jwks, now = nowSeconds(), allowedAlgorithms = new Set(['RS256', 'ES256'])}) {
+export function verifyIdToken(token, {issuer, clientId, nonce, allowedSubjects = null, jwks, now = nowSeconds(), allowedAlgorithms = new Set(['RS256', 'ES256'])}) {
   const parsed = parseIdToken(token, allowedAlgorithms);
   verifyTokenSignature(parsed, verificationKey(parsed.header, jwks));
-  verifyIdentity(parsed.claims, {issuer, nonce, allowedSubjects});
-  verifyAudience(parsed.claims, clientId);
-  verifyTimes(parsed.claims, now);
+  const claims = parsed.claims;
+  if (claims.iss !== issuer) throw new Error('wrong ID token issuer');
+  if (claims.nonce !== nonce) throw new Error('wrong ID token nonce');
+  if (typeof claims.sub !== 'string' || !claims.sub) throw new Error('invalid ID token subject');
+  if (allowedSubjects && !allowedSubjects.has(claims.sub)) throw new Error('unauthorized ID token subject');
+  verifyAudience(claims, clientId);
+  verifyTimes(claims, now);
   return Object.fromEntries(['iss', 'aud', 'azp', 'sub', 'nonce', 'iat', 'exp', 'nbf']
-    .filter(name => parsed.claims[name] !== undefined).map(name => [name, parsed.claims[name]]));
+    .filter(name => claims[name] !== undefined).map(name => [name, claims[name]]));
 }
 
-export class LoginTransactions {
-  constructor({now = nowSeconds, random: randomSource = random, ttl = 300, limit = 64} = {}) {
-    this.now = now; this.random = randomSource; this.ttl = ttl; this.limit = limit; this.pending = new Map();
+export class LinkSessions {
+  constructor({now = nowSeconds, random: source = random, ttl = 600, limit = 64} = {}) {
+    this.now = now; this.random = source; this.ttl = ttl; this.limit = limit; this.links = new Map();
   }
-  create() {
+  create(token) {
+    const at = this.now();
+    for (const [id, value] of this.links) if (value.expires < at) this.links.delete(id);
+    if (this.links.size >= this.limit) throw new Error('too many approval links');
+    const value = {id: this.random(), token, expires: at + this.ttl};
+    this.links.set(value.id, value); return value;
+  }
+  get(id, at = this.now()) {
+    const value = this.links.get(id);
+    if (!value || value.expires < at) { this.links.delete(id); return null; }
+    return value;
+  }
+}
+export class LoginTransactions {
+  constructor({now = nowSeconds, random: source = random, ttl = 300, limit = 64} = {}) {
+    this.now = now; this.random = source; this.ttl = ttl; this.limit = limit; this.pending = new Map();
+  }
+  create(linkId = '') {
     const at = this.now();
     for (const [id, value] of this.pending) if (value.expires < at) this.pending.delete(id);
     if (this.pending.size >= this.limit) throw new Error('too many pending login transactions');
-    const value = {id: this.random(), state: this.random(), nonce: this.random(), verifier: this.random(), expires: at + this.ttl};
-    this.pending.set(value.id, value);
-    return {...value};
+    const value = {id: this.random(), state: this.random(), nonce: this.random(), verifier: this.random(), linkId, expires: at + this.ttl};
+    this.pending.set(value.id, value); return {...value};
   }
   consume(id, state, at = this.now()) {
-    const value = this.pending.get(id);
-    this.pending.delete(id);
+    const value = this.pending.get(id); this.pending.delete(id);
     if (!value || !equal(value.state, state)) throw new Error('invalid or replayed login transaction');
     if (value.expires < at) throw new Error('expired login transaction');
     return {...value};
   }
 }
-
 export class ApprovalSessions {
-  constructor({now = nowSeconds, random: randomSource = random, ttl = 900, limit = 64} = {}) {
-    this.now = now; this.random = randomSource; this.ttl = ttl; this.limit = limit; this.sessions = new Map();
+  constructor({now = nowSeconds, random: source = random, ttl = 900, limit = 64} = {}) {
+    this.now = now; this.random = source; this.ttl = ttl; this.limit = limit; this.sessions = new Map();
   }
-  create(subject) {
+  create(subject, fields = {}) {
     const at = this.now();
     for (const [id, value] of this.sessions) if (value.expires < at) this.sessions.delete(id);
     if (this.sessions.size >= this.limit) throw new Error('too many approval sessions');
-    const value = {id: this.random(), subject, csrf: this.random(), expires: at + this.ttl};
-    this.sessions.set(value.id, value);
-    return {...value};
+    const value = {id: this.random(), subject, csrf: this.random(), expires: at + this.ttl, ...fields};
+    this.sessions.set(value.id, value); return {...value};
   }
   get(id, at = this.now()) {
     const value = this.sessions.get(id);
     if (!value || value.expires < at) { this.sessions.delete(id); return null; }
-    return {...value};
+    return value;
   }
   delete(id) { this.sessions.delete(id); }
 }
 
-function validateBrowserPost({method, path, origin, expectedOrigin, csrf, session}) {
-  if (!session) throw new Error('authenticated session required');
-  if (method !== 'POST' || !API_PATHS.has(path)) throw new Error('approval route refused');
-  if (origin !== expectedOrigin) throw new Error('wrong request origin');
-  if (!equal(csrf, session.csrf)) throw new Error('invalid CSRF token');
-}
-function validateQueueCapability(path, body, queueSession) {
-  if (path === '/api/session') {
-    if (typeof body?.token !== 'string' || body.token.length < 16) throw new Error('one-use queue capability required');
-    return;
-  }
-  if (!queueSession) throw new Error('independent queue session required');
-}
-export function validateApprovalRequest(request) {
-  validateBrowserPost(request);
-  validateQueueCapability(request.path, request.body, request.queueSession);
-}
-
-function parseUrl(value, label) {
-  try { return new URL(value); } catch { throw new Error(`${label} must be a valid URL`); }
-}
+function parseUrl(value, label) { try { return new URL(value); } catch { throw new Error(`${label} must be a valid URL`); } }
 function strictHttps(value, label, {originOnly = false} = {}) {
   const url = parseUrl(value, label);
-  const validAuthority = url.protocol === 'https:' && !url.username && !url.password && !url.hash;
-  const validShape = !originOnly || (url.pathname === '/' && !url.search);
-  if (!validAuthority || !validShape) throw new Error(`${label} must be an HTTPS ${originOnly ? 'origin' : 'URL'}`);
+  if (url.protocol !== 'https:' || url.username || url.password || url.hash || (originOnly && (url.pathname !== '/' || url.search))) {
+    throw new Error(`${label} must be an HTTPS ${originOnly ? 'origin' : 'URL'}`);
+  }
   return url;
 }
 function parseListen(value) {
   const url = new URL(`https://${value}`);
-  if (!url.hostname || !url.port || url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
-    throw new Error('MCT_APPROVAL_LISTEN must be host:port');
-  }
+  if (!url.hostname || !url.port || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new Error('MCT_APPROVAL_LISTEN must be host:port');
   return {host: url.hostname, port: Number(url.port)};
 }
 async function privateText(path, label) {
@@ -174,245 +162,284 @@ function cookies(header = '') {
   return Object.fromEntries(header.split(';').map(part => part.trim().split('='))
     .filter(parts => parts.length === 2 && parts[0]).map(([name, value]) => [name, value]));
 }
-function cookie(name, value, maxAge) {
-  return `${name}=${value}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`;
-}
+function cookie(name, value, maxAge) { return `${name}=${value}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`; }
 function clearCookie(name) { return cookie(name, '', 0); }
 function securityHeaders(response) {
   response.setHeader('Cache-Control', 'no-store');
   response.setHeader('X-Content-Type-Options', 'nosniff');
   response.setHeader('Referrer-Policy', 'no-referrer');
   response.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
-  response.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
+  response.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
 }
 function reply(response, status, body, contentType = 'application/json; charset=utf-8', headers = {}) {
   const data = Buffer.isBuffer(body) ? body : Buffer.from(typeof body === 'string' ? body : JSON.stringify(body));
-  response.writeHead(status, {'Content-Type': contentType, 'Content-Length': data.length, ...headers});
-  response.end(data);
+  response.writeHead(status, {'Content-Type': contentType, 'Content-Length': data.length, ...headers}); response.end(data);
 }
 async function body(request) {
   const declared = Number(request.headers['content-length']);
-  if (!Number.isInteger(declared) || declared < 2 || declared > LIMIT || request.headers['transfer-encoding']) {
-    throw new Error('invalid request body size');
-  }
+  if (!Number.isInteger(declared) || declared < 2 || declared > LIMIT || request.headers['transfer-encoding']) throw new Error('invalid request body size');
   const chunks = []; let size = 0;
   for await (const chunk of request) { size += chunk.length; if (size > LIMIT) throw new Error('request too large'); chunks.push(chunk); }
   if (size !== declared) throw new Error('incomplete request body');
-  const raw = Buffer.concat(chunks);
-  let parsed;
-  try { parsed = JSON.parse(raw); } catch { throw new Error('invalid JSON'); }
-  return {raw, parsed};
+  let parsed; try { parsed = JSON.parse(Buffer.concat(chunks)); } catch { throw new Error('invalid JSON'); }
+  return parsed;
 }
 
 class Provider {
-  constructor(config, fetcher = globalThis.fetch) {
-    this.config = config; this.fetcher = fetcher; this.discoveryCache = null; this.jwksCache = null;
-  }
+  constructor(config, fetcher = globalThis.fetch) { this.config = config; this.fetcher = fetcher; this.discoveryCache = null; this.jwksCache = null; }
   async fetchJson(url, options = {}) {
     const response = await this.fetcher(url, {...options, signal: AbortSignal.timeout(5000)});
     if (!response.ok) throw new Error(`OIDC endpoint returned ${response.status}`);
-    const text = await response.text();
-    if (text.length > LIMIT) throw new Error('OIDC response too large');
-    return JSON.parse(text);
+    const text = await response.text(); if (text.length > LIMIT) throw new Error('OIDC response too large'); return JSON.parse(text);
   }
   async discovery() {
     if (this.discoveryCache && this.discoveryCache.expires > Date.now()) return this.discoveryCache.value;
-    const url = new URL(this.config.issuer.href.replace(/\/$/, '') + '/.well-known/openid-configuration');
-    const value = await this.fetchJson(url);
+    const value = await this.fetchJson(new URL(this.config.issuer.href.replace(/\/$/, '') + '/.well-known/openid-configuration'));
     if (value.issuer !== this.config.issuer.href.replace(/\/$/, '')) throw new Error('OIDC discovery issuer mismatch');
     for (const name of ['authorization_endpoint', 'token_endpoint', 'jwks_uri']) {
-      const endpoint = strictHttps(value[name], `OIDC ${name}`);
-      if (endpoint.origin !== this.config.issuer.origin) throw new Error(`OIDC ${name} must share the issuer origin`);
+      const endpoint = strictHttps(value[name], `OIDC ${name}`); if (endpoint.origin !== this.config.issuer.origin) throw new Error(`OIDC ${name} must share the issuer origin`);
     }
-    if (!Array.isArray(value.id_token_signing_alg_values_supported) ||
-        !value.id_token_signing_alg_values_supported.some(alg => ['RS256', 'ES256'].includes(alg))) {
-      throw new Error('OIDC provider advertises no supported ID-token algorithm');
-    }
-    this.discoveryCache = {value, expires: Date.now() + 300_000};
-    return value;
+    if (!Array.isArray(value.id_token_signing_alg_values_supported) || !value.id_token_signing_alg_values_supported.some(alg => ['RS256', 'ES256'].includes(alg))) throw new Error('OIDC provider advertises no supported ID-token algorithm');
+    this.discoveryCache = {value, expires: Date.now() + 300_000}; return value;
   }
   async jwks(metadata) {
     if (this.jwksCache && this.jwksCache.expires > Date.now()) return this.jwksCache.value;
-    const value = await this.fetchJson(metadata.jwks_uri);
-    if (!Array.isArray(value.keys)) throw new Error('invalid OIDC JWKS');
-    this.jwksCache = {value, expires: Date.now() + 300_000};
-    return value;
+    const value = await this.fetchJson(metadata.jwks_uri); if (!Array.isArray(value.keys)) throw new Error('invalid OIDC JWKS');
+    this.jwksCache = {value, expires: Date.now() + 300_000}; return value;
   }
   async exchange(code, verifier) {
     const metadata = await this.discovery();
     const form = new URLSearchParams({grant_type: 'authorization_code', code, redirect_uri: this.config.redirectUri, client_id: this.config.clientId, code_verifier: verifier});
     const headers = {'Content-Type': 'application/x-www-form-urlencoded'};
-    if (this.config.tokenAuthMethod === 'client_secret_basic') {
-      headers.Authorization = `Basic ${Buffer.from(`${this.config.clientId}:${this.config.clientSecret}`).toString('base64')}`;
-    } else form.set('client_secret', this.config.clientSecret);
+    if (this.config.tokenAuthMethod === 'client_secret_basic') headers.Authorization = `Basic ${Buffer.from(`${this.config.clientId}:${this.config.clientSecret}`).toString('base64')}`;
+    else form.set('client_secret', this.config.clientSecret);
     const result = await this.fetchJson(metadata.token_endpoint, {method: 'POST', headers, body: form});
     if (typeof result.id_token !== 'string') throw new Error('OIDC token response has no ID token');
     return {idToken: result.id_token, metadata};
   }
 }
 
-async function proxy(config, request, response, raw) {
-  const queueCookie = cookies(request.headers.cookie)['__Host-mct'];
-  const target = config.upstream;
-  await new Promise((resolve, reject) => {
-    const upstream = httpsRequest({
-      hostname: target.hostname, port: target.port || 443, path: request.url, method: 'POST',
-      servername: config.origin.hostname, ca: config.upstreamCa, rejectUnauthorized: true,
-      timeout: 5000,
-      headers: {
-        Host: config.origin.host, Origin: config.origin.origin,
-        'Content-Type': 'application/json', 'Content-Length': raw.length,
-        ...(queueCookie ? {Cookie: `__Host-mct=${queueCookie}`} : {}),
-        ...(request.headers['x-mct-page'] ? {'X-MCT-Page': request.headers['x-mct-page']} : {}),
-      },
-    }, upstreamResponse => {
+async function queueRequest(config, method, path, value = null, session = null) {
+  const raw = value === null ? null : Buffer.from(JSON.stringify(value));
+  return new Promise((resolve, reject) => {
+    const upstream = httpsRequest({hostname: config.upstream.hostname, port: config.upstream.port || 443, path, method,
+      servername: config.origin.hostname, ca: config.upstreamCa, rejectUnauthorized: true, timeout: 5000,
+      headers: {Host: config.origin.host, ...(raw ? {Origin: config.origin.origin, 'Content-Type': 'application/json', 'Content-Length': raw.length} : {}),
+        ...(session?.queueCookie ? {Cookie: `__Host-mct-queue=${session.queueCookie}`} : {}),
+        ...(session?.pageId ? {'X-MCT-Page': session.pageId} : {})}}, upstreamResponse => {
       const chunks = []; let size = 0;
-      upstreamResponse.on('data', chunk => { size += chunk.length; if (size > LIMIT) upstreamResponse.destroy(new Error('upstream response too large')); else chunks.push(chunk); });
+      upstreamResponse.on('data', chunk => { size += chunk.length; if (size > LIMIT) upstreamResponse.destroy(new Error('queue response too large')); else chunks.push(chunk); });
       upstreamResponse.on('end', () => {
-        const headers = {};
-        const setCookie = upstreamResponse.headers['set-cookie']?.find(value => value.startsWith('__Host-mct='));
-        if (setCookie) headers['Set-Cookie'] = setCookie;
-        reply(response, upstreamResponse.statusCode || 502, Buffer.concat(chunks), 'application/json; charset=utf-8', headers);
-        resolve();
+        const data = Buffer.concat(chunks);
+        if ((upstreamResponse.statusCode || 500) >= 400) return reject(new Error('approval queue refused request'));
+        const setCookie = upstreamResponse.headers['set-cookie']?.find(item => item.startsWith('__Host-mct-queue='));
+        const queueCookie = setCookie?.match(/^__Host-mct-queue=([^;]+)/)?.[1];
+        const type = String(upstreamResponse.headers['content-type'] || '');
+        if (type.startsWith('application/json')) {
+          try { resolve({value: JSON.parse(data), queueCookie}); } catch { reject(new Error('invalid queue response')); }
+        } else resolve({value: data, contentType: type, queueCookie});
       });
     });
-    upstream.on('timeout', () => upstream.destroy(new Error('upstream timeout')));
-    upstream.on('error', reject);
-    upstream.end(raw);
+    upstream.on('timeout', () => upstream.destroy(new Error('queue timeout'))); upstream.on('error', reject); upstream.end(raw || undefined);
   });
 }
 
-function required(env, name) {
-  if (!env[name]) throw new Error(`${name} is required`);
-  return env[name];
-}
+function required(env, name) { if (!env[name]) throw new Error(`${name} is required`); return env[name]; }
 function loopbackUpstream(value) {
   const upstream = strictHttps(value, 'MCT_APPROVAL_UPSTREAM', {originOnly: true});
   if (!['127.0.0.1', '::1', 'localhost'].includes(upstream.hostname)) throw new Error('approval queue upstream must be loopback');
   return upstream;
 }
 function tokenAuthMethod(value = 'client_secret_basic') {
-  if (!['client_secret_basic', 'client_secret_post'].includes(value)) throw new Error('unsupported token auth method');
-  return value;
+  if (!['client_secret_basic', 'client_secret_post'].includes(value)) throw new Error('unsupported token auth method'); return value;
 }
 function sessionLifetime(value = '900') {
-  const seconds = Number(value);
-  if (!Number.isInteger(seconds) || seconds < 60 || seconds > 900) throw new Error('session lifetime must be 60..900 seconds');
-  return seconds;
+  const seconds = Number(value); if (!Number.isInteger(seconds) || seconds < 60 || seconds > 900) throw new Error('session lifetime must be 60..900 seconds'); return seconds;
 }
 async function subjectAllowlist(path) {
   const allowed = JSON.parse(await privateText(path, 'OIDC subject allowlist'));
-  if (!Array.isArray(allowed) || !allowed.length || allowed.some(value => typeof value !== 'string' || !value)) {
-    throw new Error('OIDC subject allowlist must be a nonempty JSON string array');
-  }
+  if (!Array.isArray(allowed) || !allowed.length || allowed.some(value => typeof value !== 'string' || !value)) throw new Error('OIDC subject allowlist must be a nonempty JSON string array');
   return new Set(allowed);
 }
 async function configuration(env) {
   const origin = strictHttps(required(env, 'MCT_APPROVAL_ORIGIN'), 'MCT_APPROVAL_ORIGIN', {originOnly: true});
-  return {
-    origin,
-    issuer: strictHttps(required(env, 'MCT_OIDC_ISSUER'), 'MCT_OIDC_ISSUER', {originOnly: true}),
-    upstream: loopbackUpstream(required(env, 'MCT_APPROVAL_UPSTREAM')),
-    listen: parseListen(env.MCT_APPROVAL_LISTEN || '127.0.0.1:8443'),
-    clientId: required(env, 'MCT_OIDC_CLIENT_ID'),
-    tokenAuthMethod: tokenAuthMethod(env.MCT_OIDC_TOKEN_AUTH_METHOD),
-    sessionSeconds: sessionLifetime(env.MCT_APPROVAL_SESSION_SECONDS),
-    allowedSubjects: await subjectAllowlist(required(env, 'MCT_OIDC_ALLOWED_SUBJECTS_FILE')),
+  if (origin.hostname !== 'mct-approval.nicabar.org' && env.MCT_APPROVAL_TEST_HOST !== '1') throw new Error('MCT approval RP must be mct-approval.nicabar.org');
+  const wikiProofUrl = strictHttps(env.MCT_APPROVAL_WIKI_PROOF_URL || 'https://wiki.nicabar.org/library/_mct-proof', 'MCT_APPROVAL_WIKI_PROOF_URL');
+  if (wikiProofUrl.hostname !== 'wiki.nicabar.org' || wikiProofUrl.pathname !== '/library/_mct-proof' || wikiProofUrl.search) throw new Error('wiki proof URL is not allowlisted');
+  return {origin, wikiProofUrl, issuer: strictHttps(required(env, 'MCT_OIDC_ISSUER'), 'MCT_OIDC_ISSUER', {originOnly: true}),
+    upstream: loopbackUpstream(required(env, 'MCT_APPROVAL_UPSTREAM')), listen: parseListen(env.MCT_APPROVAL_LISTEN || '127.0.0.1:8443'),
+    clientId: required(env, 'MCT_OIDC_CLIENT_ID'), tokenAuthMethod: tokenAuthMethod(env.MCT_OIDC_TOKEN_AUTH_METHOD),
+    sessionSeconds: sessionLifetime(env.MCT_APPROVAL_SESSION_SECONDS), allowedSubjects: await subjectAllowlist(required(env, 'MCT_OIDC_ALLOWED_SUBJECTS_FILE')),
     clientSecret: await privateText(required(env, 'MCT_OIDC_CLIENT_SECRET_FILE'), 'OIDC client secret'),
-    tlsCert: await readFile(required(env, 'MCT_APPROVAL_TLS_CERT_FILE')),
-    tlsKey: await privateText(required(env, 'MCT_APPROVAL_TLS_KEY_FILE'), 'TLS private key'),
+    tlsCert: await readFile(required(env, 'MCT_APPROVAL_TLS_CERT_FILE')), tlsKey: await privateText(required(env, 'MCT_APPROVAL_TLS_KEY_FILE'), 'TLS private key'),
     upstreamCa: await readFile(required(env, 'MCT_APPROVAL_UPSTREAM_CA_FILE')),
-    redirectUri: `${origin.origin}/oidc/callback`,
-  };
+    proofSigningKey: createPrivateKey(await privateText(required(env, 'MCT_APPROVAL_PROOF_SIGNING_KEY_FILE'), 'proof signing key')),
+    wikiVerifyKey: createPublicKey(await readFile(required(env, 'MCT_APPROVAL_WIKI_VERIFY_KEY_FILE'), 'utf8')),
+    redirectUri: `${origin.origin}/oidc/callback`};
 }
 async function loadAssets() {
-  const specs = [['/', 'text/html; charset=utf-8', 'passkey-approval.html'],
-    ['/approve/', 'text/html; charset=utf-8', 'passkey-approval.html'],
-    ['/approval.mjs', 'text/javascript; charset=utf-8', 'passkey-approval.mjs'],
-    ['/passkey-admin.mjs', 'text/javascript; charset=utf-8', 'passkey-admin.mjs']];
-  return new Map(await Promise.all(specs.map(async ([route, type, name]) => [route, [type, await readFile(join(ROOT, name))]])));
+  const specs = [['/tokens.css', 'text/css; charset=utf-8', join(ASSET_ROOT, 'tokens.css')],
+    ['/approval.css', 'text/css; charset=utf-8', join(ASSET_ROOT, 'approval.css')],
+    ['/approval-client.mjs', 'text/javascript; charset=utf-8', join(ASSET_ROOT, 'approval-client.mjs')],
+    ['/display-client.mjs', 'text/javascript; charset=utf-8', join(ASSET_ROOT, 'display-client.mjs')],
+    ['/vendor/datastar.js', 'text/javascript; charset=utf-8', join(ASSET_ROOT, 'datastar.js')],
+    ['/passkey-admin.mjs', 'text/javascript; charset=utf-8', join(ROOT, 'passkey-admin.mjs')]];
+  return new Map(await Promise.all(specs.map(async ([route, type, path]) => [route, [type, await readFile(path)]])));
 }
 function authorizationUrl(metadata, config, pending) {
   const authorization = new URL(metadata.authorization_endpoint);
-  const values = {response_type: 'code', client_id: config.clientId, redirect_uri: config.redirectUri,
-    scope: 'openid', state: pending.state, nonce: pending.nonce,
+  const values = {response_type: 'code', client_id: config.clientId, redirect_uri: config.redirectUri, scope: 'openid', state: pending.state, nonce: pending.nonce,
     code_challenge: createHash('sha256').update(pending.verifier).digest('base64url'), code_challenge_method: 'S256'};
-  for (const [name, value] of Object.entries(values)) authorization.searchParams.set(name, value);
-  return authorization;
+  for (const [name, value] of Object.entries(values)) authorization.searchParams.set(name, value); return authorization;
 }
-async function handleLogin(context, response) {
-  const pending = context.transactions.create();
+function browserPost(request, session) {
+  if (!session || request.headers.origin !== session.origin || !equal(request.headers['x-mct-csrf'], session.csrf) || request.headers['content-type'] !== 'application/json') throw new Error('browser action refused');
+}
+async function streamStatus(response, readState) {
+  response.writeHead(200, {'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive'});
+  let alive = true; response.on('close', () => { alive = false; }); let last = '';
+  const until = Date.now() + 25_000;
+  while (alive && Date.now() < until) {
+    const state = await readState(); const marker = `${state.phase}:${state.revision}`;
+    if (marker !== last) { response.write(`event: status\ndata: ${JSON.stringify({phase: state.phase, revision: state.revision})}\n\n`); last = marker; }
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  if (alive) response.end();
+}
+
+async function handleLogin(context, response, token, jar) {
+  const link = context.links.get(jar['__Host-mct-link']);
+  if (!link || !equal(link.token, token)) throw new Error('approval link session is unavailable');
+  const pending = context.transactions.create(link.id);
   const target = authorizationUrl(await context.provider.discovery(), context.config, pending);
-  return reply(response, 302, '', 'text/plain', {'Location': target.href, 'Set-Cookie': cookie('__Host-mct-oidc-state', pending.id, 300)});
+  reply(response, 302, '', 'text/plain', {'Location': target.href, 'Set-Cookie': cookie('__Host-mct-oidc-state', pending.id, 300)});
 }
 async function handleCallback(context, response, url, jar) {
   const pending = context.transactions.consume(jar['__Host-mct-oidc-state'], url.searchParams.get('state'));
-  const code = url.searchParams.get('code');
-  if (!code) throw new Error('missing authorization code');
+  const link = context.links.get(pending.linkId);
+  if (!link || !equal(pending.linkId, jar['__Host-mct-link'])) throw new Error('approval link changed during sign-in');
+  const code = url.searchParams.get('code'); if (!code) throw new Error('missing authorization code');
   const exchanged = await context.provider.exchange(code, pending.verifier);
   const algorithms = new Set(exchanged.metadata.id_token_signing_alg_values_supported.filter(alg => ['RS256', 'ES256'].includes(alg)));
-  const claims = verifyIdToken(exchanged.idToken, {issuer: context.config.issuer.href.replace(/\/$/, ''),
-    clientId: context.config.clientId, nonce: pending.nonce, allowedSubjects: context.config.allowedSubjects,
-    jwks: await context.provider.jwks(exchanged.metadata), allowedAlgorithms: algorithms});
-  const created = context.sessions.create(claims.sub);
-  return reply(response, 302, '', 'text/plain', {'Location': '/', 'Set-Cookie': [clearCookie('__Host-mct-oidc-state'), cookie('__Host-mct-oidc-session', created.id, context.config.sessionSeconds)]});
+  const claims = verifyIdToken(exchanged.idToken, {issuer: context.config.issuer.href.replace(/\/$/, ''), clientId: context.config.clientId,
+    nonce: pending.nonce, jwks: await context.provider.jwks(exchanged.metadata), allowedAlgorithms: algorithms});
+  let created;
+  if (context.config.allowedSubjects.has(claims.sub)) {
+    const claimed = await queueRequest(context.config, 'POST', '/api/session', {token: link.token, subject: 'nicabar'});
+    created = context.sessions.create('nicabar', {token: link.token, queueCookie: claimed.queueCookie, pageId: claimed.value.page_id, origin: context.config.origin.origin, wrong: false});
+  } else {
+    created = context.sessions.create('another account', {token: link.token, origin: context.config.origin.origin, wrong: true});
+  }
+  reply(response, 302, '', 'text/plain', {'Location': `/a/${link.token}`, 'Set-Cookie': [clearCookie('__Host-mct-oidc-state'), cookie('__Host-mct-session', created.id, context.config.sessionSeconds)]});
 }
-async function handleAuthenticated(context, request, response, url, jar, session) {
-  if (request.method === 'GET' && url.pathname === '/api/auth') return reply(response, 200, {subject: session.subject, csrf: session.csrf});
+
+async function phoneState(context, session) {
+  return (await queueRequest(context.config, 'POST', '/api/state', {}, session)).value;
+}
+async function handlePhone(context, request, response, url, token, jar) {
+  const inspected = (await queueRequest(context.config, 'POST', '/api/inspect', {token})).value;
+  const session = context.sessions.get(jar['__Host-mct-session']);
+  const bound = session && equal(session.token, token) ? session : null;
+  if (request.method === 'GET' && url.pathname === `/a/${token}/login`) return handleLogin(context, response, token, jar);
+  if (request.method === 'GET' && url.pathname === `/a/${token}/events`) {
+    if (!bound || bound.wrong) return streamStatus(response, async () => (await queueRequest(context.config, 'POST', '/api/inspect', {token})).value);
+    return streamStatus(response, () => phoneState(context, bound));
+  }
+  if (request.method === 'GET' && url.pathname === `/a/${token}/challenge`) {
+    if (!bound || bound.wrong) throw new Error('authenticated approval session required');
+    const state = await phoneState(context, bound); if (state.phase !== 'prepared') throw new Error('grant is not prepared');
+    return reply(response, 200, state.prepared);
+  }
+  if (request.method === 'GET' && url.pathname === `/a/${token}/proof/go`) {
+    if (!bound || bound.wrong) throw new Error('authenticated proof session required');
+    const requestValue = (await queueRequest(context.config, 'POST', '/api/proof-request', {}, bound)).value;
+    const proof = {...requestValue, return_url: `${context.config.origin.origin}/a/${token}/proof/result`};
+    const ticket = makeProofTicket({id: proof.id, nonce: proof.nonce, path: proof.path, expected_subject: proof.expected_subject,
+      required_group: proof.required_group, return_url: proof.return_url}, context.config.proofSigningKey, nowSeconds());
+    const target = new URL(context.config.wikiProofUrl); target.searchParams.set('t', ticket.token);
+    return reply(response, 303, '', 'text/plain', {Location: target.href});
+  }
+  if (request.method === 'GET' && url.pathname === `/a/${token}/proof/result`) {
+    if (!bound || bound.wrong) throw new Error('authenticated proof session required');
+    const requestValue = (await queueRequest(context.config, 'POST', '/api/proof-request', {}, bound)).value;
+    const verifier = new ProofResultVerifier({id: requestValue.id, nonce: requestValue.nonce, path: requestValue.path,
+      expected_subject: requestValue.expected_subject}, context.config.wikiVerifyKey);
+    const decision = verifier.accept(url.searchParams.get('r') || '', nowSeconds());
+    const normalized = decision.phase === 'passed'
+      ? {outcome: 'pass', reason: 'ok', subject: 'nicabar', path: requestValue.path, nonce: requestValue.nonce}
+      : decision.phase === 'failed'
+        ? {outcome: 'fail', reason: decision.reason, subject: 'nicabar', path: requestValue.path, nonce: requestValue.nonce}
+        : {outcome: 'refused', reason: decision.reason, subject: 'nicabar', path: requestValue.path, nonce: requestValue.nonce};
+    await queueRequest(context.config, 'POST', '/api/proof-result', {result: normalized}, bound);
+    return reply(response, 303, '', 'text/plain', {Location: `/a/${token}`});
+  }
+  if (request.method === 'POST' && [`/a/${token}/approve`, `/a/${token}/decline`, `/a/${token}/skip`].includes(url.pathname)) {
+    if (!bound || bound.wrong) throw new Error('authenticated approval session required');
+    browserPost(request, bound); const value = await body(request);
+    const route = url.pathname.endsWith('/approve') ? ['/api/complete', {result: value.result}]
+      : url.pathname.endsWith('/decline') ? ['/api/decline', {}] : ['/api/skip', {}];
+    return reply(response, 200, (await queueRequest(context.config, 'POST', route[0], route[1], bound)).value);
+  }
+  if (request.method !== 'GET' || url.pathname !== `/a/${token}`) return reply(response, 404, {error: 'not found'});
+  if (!bound) {
+    const current = context.links.get(jar['__Host-mct-link']);
+    const matched = current && equal(current.token, token);
+    const link = matched ? current : context.links.create(token);
+    const headers = matched ? {} : {'Set-Cookie': cookie('__Host-mct-link', link.id, Math.max(1, Math.min(600, Math.ceil(inspected.deadline - nowSeconds()))))};
+    const state = inspected.phase === 'waiting' ? inspected : {...inspected, phase: inspected.phase === 'expired' ? 'expired' : 'refused', request: {asker: inspected.asker}};
+    return reply(response, 200, renderPhone(state, {token}), 'text/html; charset=utf-8', headers);
+  }
+  if (bound.wrong) return reply(response, 200, renderPhone(inspected, {token, wrong: true}), 'text/html; charset=utf-8');
+  return reply(response, 200, renderPhone(await phoneState(context, bound), {token, csrf: bound.csrf, cancelled: url.searchParams.get('cancelled') === '1'}), 'text/html; charset=utf-8');
+}
+
+async function dispatchRequest(context, request, response) {
+  if (request.headers.host !== context.config.origin.host) return reply(response, 421, {error: 'wrong host'});
+  const url = new URL(request.url, context.config.origin); const jar = cookies(request.headers.cookie);
   if (request.method === 'GET' && context.assets.has(url.pathname)) {
     const [type, data] = context.assets.get(url.pathname); return reply(response, 200, data, type);
   }
-  if (request.method !== 'POST' || !API_PATHS.has(url.pathname)) return reply(response, 404, {error: 'not found'});
-  if (request.headers['content-type'] !== 'application/json') throw new Error('JSON required');
-  const incoming = await body(request);
-  validateApprovalRequest({method: request.method, path: url.pathname, origin: request.headers.origin,
-    expectedOrigin: context.config.origin.origin, csrf: request.headers['x-mct-csrf'], session,
-    queueSession: Boolean(jar['__Host-mct']), body: incoming.parsed});
-  return proxy(context.config, request, response, incoming.raw);
-}
-async function handlePublicRoute(context, request, response, url, jar) {
-  if (request.method !== 'GET') return false;
-  if (url.pathname === '/login') { await handleLogin(context, response); return true; }
-  if (url.pathname === '/oidc/callback') { await handleCallback(context, response, url, jar); return true; }
-  if (url.pathname !== '/logout') return false;
-  context.sessions.delete(jar['__Host-mct-oidc-session']);
-  reply(response, 302, '', 'text/plain', {'Location': '/login', 'Set-Cookie': clearCookie('__Host-mct-oidc-session')});
-  return true;
-}
-async function dispatchRequest(context, request, response) {
-  if (request.headers.host !== context.config.origin.host) return reply(response, 421, {error: 'wrong host'});
-  const url = new URL(request.url, context.config.origin);
-  const jar = cookies(request.headers.cookie);
-  if (await handlePublicRoute(context, request, response, url, jar)) return;
-  const session = context.sessions.get(jar['__Host-mct-oidc-session']);
-  if (!session) return reply(response, 302, '', 'text/plain', {'Location': '/login'});
-  return handleAuthenticated(context, request, response, url, jar, session);
+  if (request.method === 'GET' && url.pathname === '/oidc/callback') return handleCallback(context, response, url, jar);
+  if (request.method === 'GET' && url.pathname === '/logout') {
+    context.sessions.delete(jar['__Host-mct-session']); return reply(response, 302, '', 'text/plain', {Location: '/', 'Set-Cookie': clearCookie('__Host-mct-session')});
+  }
+  const phone = url.pathname.match(/^\/a\/([A-Za-z0-9_-]{16,})/);
+  if (phone) return handlePhone(context, request, response, url, phone[1], jar);
+  const displayQr = url.pathname.match(/^\/d\/([A-Za-z0-9_-]{16,})\/qr\.(svg|png)$/);
+  if (request.method === 'GET' && displayQr) {
+    const qr = await queueRequest(context.config, 'GET', `/d/${displayQr[1]}/qr.${displayQr[2]}`);
+    return reply(response, 200, qr.value, displayQr[2] === 'svg' ? 'image/svg+xml' : 'image/png');
+  }
+  const displayEvents = url.pathname.match(/^\/d\/([A-Za-z0-9_-]{16,})\/events$/);
+  if (request.method === 'GET' && displayEvents) return streamStatus(response, async () => (await queueRequest(context.config, 'GET', `/d/${displayEvents[1]}.json`)).value);
+  const display = url.pathname.match(/^\/d\/([A-Za-z0-9_-]{16,})$/);
+  if (request.method === 'GET' && display) {
+    const state = (await queueRequest(context.config, 'GET', `/d/${display[1]}.json`)).value; return reply(response, 200, renderDisplay(state), 'text/html; charset=utf-8');
+  }
+  return reply(response, 404, {error: 'not found'});
 }
 function requestHandler(context) {
   return async (request, response) => {
     securityHeaders(response);
-    try { return await dispatchRequest(context, request, response); }
+    try { await dispatchRequest(context, request, response); }
     catch (error) {
       console.error(`approval gate refused request: ${error.message}`);
+      if (response.headersSent) return response.destroy();
       const headers = request.url?.startsWith('/oidc/callback') ? {'Set-Cookie': clearCookie('__Host-mct-oidc-state')} : {};
-      return reply(response, 400, {error: 'request refused'}, 'application/json; charset=utf-8', headers);
+      reply(response, 400, {error: 'request refused'}, 'application/json; charset=utf-8', headers);
     }
   };
 }
 function boundServer(server) {
-  server.requestTimeout = 5000; server.headersTimeout = 5000; server.keepAliveTimeout = 1000;
-  server.maxHeadersCount = 32; server.maxConnections = 16;
-  return server;
+  server.requestTimeout = 30_000; server.headersTimeout = 5000; server.keepAliveTimeout = 1000; server.maxHeadersCount = 32; server.maxConnections = 32; return server;
 }
 export async function run(env = process.env, {fetcher = globalThis.fetch} = {}) {
   const config = await configuration(env);
-  const context = {config, provider: new Provider(config, fetcher), transactions: new LoginTransactions(),
+  const context = {config, provider: new Provider(config, fetcher), links: new LinkSessions(), transactions: new LoginTransactions(),
     sessions: new ApprovalSessions({ttl: config.sessionSeconds}), assets: await loadAssets()};
   const server = boundServer(createServer({cert: config.tlsCert, key: config.tlsKey, minVersion: 'TLSv1.2'}, requestHandler(context)));
-  server.listen(config.listen.port, config.listen.host, () => console.log(`Pocket ID approval gate listening at ${config.origin.origin}`));
-  return server;
+  server.listen(config.listen.port, config.listen.host, () => console.log(`Pocket ID approval gate listening at ${config.origin.origin}`)); return server;
 }
-
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   run().catch(error => { console.error(`Pocket ID approval gate failed: ${error.message}`); process.exitCode = 1; });
 }

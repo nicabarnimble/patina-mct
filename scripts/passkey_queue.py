@@ -1,9 +1,11 @@
-"""Local assertion transport. This module never invokes Mother or a subprocess."""
-from dataclasses import dataclass
+"""Loopback-only approval queue. It stores no MCT root private key and invokes no subprocess."""
+from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import hashlib
 import json
 import os
 import secrets
@@ -15,8 +17,9 @@ import time
 from urllib.parse import urlsplit
 
 LIMIT = 96 * 1024
-OFFER_LEASE_SECONDS = 30
+CODE_SECONDS = 10 * 60
 ROOT = Path(__file__).resolve().parent
+CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 
 
 def loads(data):
@@ -27,8 +30,10 @@ def loads(data):
                 raise ValueError("duplicate field")
             result[key] = value
         return result
+
     def nonfinite(_):
         raise ValueError("nonfinite number")
+
     return json.loads(data, object_pairs_hook=pairs, parse_constant=nonfinite)
 
 
@@ -77,189 +82,421 @@ def read_private(path):
         return loads(data)
 
 
+def text(value, name, maximum=256):
+    if not isinstance(value, str) or not value or len(value) > maximum or any(ord(c) < 0x20 for c in value):
+        raise ValueError("invalid " + name)
+    return value
+
+
+def exact(value, keys):
+    return isinstance(value, dict) and set(value) == set(keys)
+
+
+GRANT_SCOPE_PRESENTATIONS = {
+    "status": {"name": "Read Mother status", "description": "See current governed runtime status"},
+    "key_manage": {"name": "Manage day keys", "description": "Issue and revoke bounded day-to-day keys"},
+}
+
+
+def grant_request_from_action(asker, mother, action, signed=False):
+    if not isinstance(action, dict):
+        raise ValueError("invalid grant action")
+    kind = action.get("action")
+    if kind == "bootstrap":
+        allowed = exact(action, ("action", "root", "inventory_hash")) if signed else (
+            exact(action, ("action", "root")) or exact(action, ("action", "root", "inventory_hash")))
+        root = action.get("root")
+        if not allowed or not exact(root, ("credential_id", "public_key_sec1", "rp_id", "origin")):
+            raise ValueError("invalid passkey root action")
+        if signed:
+            text(action.get("inventory_hash"), "inventory hash", 256)
+        fingerprint = hashlib.sha256(encoded(root)).hexdigest()
+        permissions = [{"name": "Establish passkey administration",
+                        "description": "Trust passkey root sha256:" + fingerprint + " as the independent administrator"}]
+        grant_end = "On approval"
+    elif kind == "issue_day_key":
+        if not exact(action, ("action", "grant_id", "public_half", "scopes", "expires_at")):
+            raise ValueError("invalid day-key issue action")
+        grant_id = text(action.get("grant_id"), "grant id", 128)
+        scopes = action.get("scopes")
+        if (not isinstance(scopes, list) or not scopes
+                or any(not isinstance(scope, str) for scope in scopes)
+                or len(scopes) != len(set(scopes))
+                or any(scope not in GRANT_SCOPE_PRESENTATIONS for scope in scopes)):
+            raise ValueError("invalid day-key scopes")
+        public_half = action.get("public_half")
+        if (not exact(public_half, ("scheme", "public_key"))
+                or public_half.get("scheme") != "ed25519"):
+            raise ValueError("invalid day-key public half")
+        fingerprint = hashlib.sha256(encoded(public_half)).hexdigest()
+        permissions = [{"name": "Issue day key",
+                        "description": "Issue grant " + grant_id + " to key sha256:" + fingerprint}]
+        permissions.extend(dict(GRANT_SCOPE_PRESENTATIONS[scope]) for scope in scopes)
+        grant_end = text(action.get("expires_at"), "grant end", 64)
+        try:
+            if datetime.fromisoformat(grant_end.replace("Z", "+00:00")).tzinfo is None:
+                raise ValueError
+        except ValueError:
+            raise ValueError("invalid grant end") from None
+    elif kind == "revoke_day_key":
+        if not exact(action, ("action", "grant_id")):
+            raise ValueError("invalid day-key revoke action")
+        grant_id = text(action.get("grant_id"), "grant id", 128)
+        permissions = [{"name": "Revoke day key", "description": "End access for " + grant_id}]
+        grant_end = "On approval"
+    else:
+        raise ValueError("unsupported grant action")
+    return normalize_request({"kind": "grant", "asker": asker, "mother": mother,
+                              "permissions": permissions, "grant_ends_at": grant_end})
+
+
+def normalize_request(value):
+    if not isinstance(value, dict) or value.get("kind") not in ("grant", "proof"):
+        raise ValueError("invalid request kind")
+    if value["kind"] == "grant":
+        if not exact(value, ("kind", "asker", "mother", "permissions", "grant_ends_at")):
+            raise ValueError("invalid grant request")
+        permissions = value["permissions"]
+        if not isinstance(permissions, list) or not 1 <= len(permissions) <= 12:
+            raise ValueError("invalid permissions")
+        normalized = []
+        for item in permissions:
+            if not exact(item, ("name", "description")):
+                raise ValueError("invalid permission")
+            normalized.append({"name": text(item["name"], "permission", 96),
+                               "description": text(item["description"], "permission description", 256)})
+        return {"kind": "grant", "asker": text(value["asker"], "asker", 64),
+                "mother": text(value["mother"], "Mother", 128), "permissions": normalized,
+                "grant_ends_at": text(value["grant_ends_at"], "grant end", 64)}
+    if not exact(value, ("kind", "asker", "title", "site", "path", "why",
+                         "expected_subject", "required_group")):
+        raise ValueError("invalid proof request")
+    path = text(value["path"], "proof path", 512)
+    if (not path.startswith("/library/") or "?" in path or "#" in path or "\\" in path
+            or "%" in path or "//" in path or ".." in path.split("/")):
+        raise ValueError("invalid proof path")
+    site = text(value["site"], "proof site", 253)
+    if site != "wiki.nicabar.org":
+        raise ValueError("proof site is not allowlisted")
+    if value["expected_subject"] != "nicabar" or value["required_group"] != "wiki-admin":
+        raise ValueError("proof identity contract changed")
+    return {"kind": "proof", "asker": text(value["asker"], "asker", 64),
+            "title": text(value["title"], "document title", 160), "site": site, "path": path,
+            "why": text(value["why"], "proof reason", 256), "expected_subject": "nicabar",
+            "required_group": "wiki-admin"}
+
+
 class Phase(str, Enum):
-    QUEUED = "queued"
-    READY = "ready"
+    WAITING = "waiting"
+    OPENED = "opened"
     PREPARED = "prepared"
-    OFFERED = "offered"
     SIGNED = "signed"
-    TAKEN = "taken"
+    APPROVED = "approved"
+    DECLINED = "declined"
+    PASSED = "passed"
     FAILED = "failed"
+    SKIPPED = "skipped"
+    EXPIRED = "expired"
+    REFUSED = "refused"
 
 
-@dataclass
-class Offer:
-    id: str
-    page_id: str
-    deadline: float
+TERMINAL = {Phase.APPROVED, Phase.DECLINED, Phase.PASSED, Phase.FAILED,
+            Phase.SKIPPED, Phase.EXPIRED, Phase.REFUSED}
 
 
 @dataclass
 class Job:
     id: str
-    kind: str
-    name: str
+    token: str
+    display_id: str
+    code: str
+    request: dict
+    created_at: float
     deadline: float
-    phase: Phase = Phase.QUEUED
+    nonce: str
+    phase: Phase = Phase.WAITING
     prepared: dict | None = None
-    offer: Offer | None = None
+    consumed: bool = False
+    cookie: str | None = None
+    page_id: str | None = None
+    subject: str | None = None
+    outcome: str | None = None
+    reason: str | None = None
+    decided_at: float | None = None
+    taken: bool = False
+    revision: int = 0
 
-    def view(self):
-        return {"id": self.id, "kind": self.kind, "name": self.name,
-                "phase": self.phase, "prepared": self.prepared,
-                "offer": self.offer.id if self.offer else None,
-                "lease_ms": OFFER_LEASE_SECONDS * 1000}
-
-    def release(self):
-        self.offer = None
-        self.phase = Phase.QUEUED if self.kind == "registration" else Phase.PREPARED
+    def public(self, details=True):
+        value = {"id": self.id, "display_id": self.display_id, "code": self.code,
+                 "kind": self.request["kind"], "phase": self.phase.value,
+                 "created_at": self.created_at, "deadline": self.deadline,
+                 "remaining_seconds": max(0, int(self.deadline - time.time())),
+                 "consumed": self.consumed, "outcome": self.outcome, "reason": self.reason,
+                 "decided_at": self.decided_at, "revision": self.revision}
+        if details:
+            value.update({"request": self.request, "prepared": self.prepared,
+                          "subject": self.subject, "nonce": self.nonce})
+        return value
 
 
 class Broker:
     def __init__(self, directory, origin):
         self.directory = private_directory(directory)
         parts = urlsplit(origin)
-        if (parts.scheme != "https" or not parts.hostname
-                or parts.username or parts.password or parts.path or parts.query or parts.fragment):
+        if (parts.scheme != "https" or not parts.hostname or parts.username or parts.password
+                or parts.path or parts.query or parts.fragment):
             raise ValueError("expected an HTTPS origin without a path")
         self.origin = origin
         self.host = parts.netloc
         self.rp_id = parts.hostname
         self.jobs = {}
-        self.lock = threading.Lock()
-        self.page_token = None
-        self.token_deadline = 0
-        self.cookie = None
-        self.page_id = None
+        self.lock = threading.RLock()
+        self.changed = threading.Condition(self.lock)
+
+    def touch(self, job):
+        job.revision += 1
+        self.changed.notify_all()
 
     def expire(self):
-        current = time.monotonic()
+        now = time.time()
         for job in self.jobs.values():
-            if current >= job.deadline and job.phase not in (Phase.TAKEN, Phase.FAILED):
-                job.phase = Phase.FAILED
-            elif job.phase == Phase.OFFERED and current >= job.offer.deadline:
-                job.release()
+            if now >= job.deadline and job.phase not in TERMINAL and job.phase != Phase.SIGNED:
+                job.phase = Phase.EXPIRED
+                job.decided_at = now
+                self.touch(job)
+
+    def new_code(self):
+        active = {job.code for job in self.jobs.values() if job.phase not in TERMINAL}
+        while True:
+            raw = "".join(secrets.choice(CODE_ALPHABET) for _ in range(4))
+            code = raw[:2] + "-" + raw[2:]
+            if code not in active:
+                return code
+
+    def find_token(self, token):
+        if not isinstance(token, str):
+            raise ValueError("invalid code capability")
+        found = None
+        for job in self.jobs.values():
+            if secrets.compare_digest(token, job.token):
+                found = job
+        if found is None:
+            raise ValueError("unknown code capability")
+        return found
+
+    def session_job(self, cookie, page_id):
+        if not isinstance(cookie, str) or not isinstance(page_id, str):
+            raise ValueError("invalid page session")
+        for job in self.jobs.values():
+            if (job.cookie and job.page_id and secrets.compare_digest(cookie, job.cookie)
+                    and secrets.compare_digest(page_id, job.page_id)):
+                return job
+        raise ValueError("unauthenticated page")
 
     def cli(self, request):
         with self.lock:
             self.expire()
             op = request["op"]
-            if op == "open":
-                self.page_token = secrets.token_urlsafe(32)
-                self.token_deadline = time.monotonic() + 120
-                return {"url": self.origin + "/approve/#" + self.page_token}
             if op == "enqueue":
-                self.jobs = {k: j for k, j in self.jobs.items()
-                             if j.phase not in (Phase.TAKEN, Phase.FAILED)}
-                if len(self.jobs) >= 8 or request["kind"] not in ("registration", "assertion"):
-                    raise ValueError("queue full or invalid kind")
-                name = request.get("name", "Doug")
-                if not isinstance(name, str) or not 1 <= len(name) <= 64:
-                    raise ValueError("invalid name")
-                job = Job(secrets.token_hex(32), request["kind"], name, time.monotonic() + 3600)
+                self.jobs = {key: job for key, job in self.jobs.items()
+                             if job.phase not in TERMINAL or time.time() - (job.decided_at or 0) < 3600}
+                if len(self.jobs) >= 32:
+                    raise ValueError("approval queue full")
+                body = normalize_request(request["request"])
+                now = time.time()
+                job = Job(secrets.token_hex(32), secrets.token_urlsafe(16), secrets.token_urlsafe(16),
+                          self.new_code(), body, now, now + CODE_SECONDS, secrets.token_urlsafe(32))
                 self.jobs[job.id] = job
-                return job.view()
+                result = job.public()
+                result.update({"token": job.token, "url": self.origin + "/a/" + job.token,
+                               "display_url": self.origin + "/d/" + job.display_id})
+                return result
             job = self.jobs[request["id"]]
             if op == "status":
-                return job.view()
-            if op == "cancel" and job.phase not in (Phase.TAKEN, Phase.FAILED):
-                job.phase = Phase.FAILED
-                return job.view()
-            if op == "publish" and job.kind == "assertion" and job.phase == Phase.READY:
+                return job.public()
+            if op == "publish":
+                if job.request["kind"] != "grant" or job.phase != Phase.OPENED or job.consumed:
+                    raise ValueError("grant is not ready for preparation")
                 prepared = request["prepared"]
                 encoded(prepared)
-                root = prepared["root"]
-                if (root["origin"] != self.origin or root["rp_id"] != self.rp_id
-                        or prepared["intent"]["action"]["action"] not in
-                        ("bootstrap", "issue_day_key", "revoke_day_key")):
-                    raise ValueError("wrong root or action")
-                encoded({"result": dict(job.view(), prepared=prepared, phase=Phase.PREPARED)})
+                try:
+                    root = prepared["root"]
+                    intent = prepared["intent"]
+                    displayed = grant_request_from_action(job.request["asker"], intent["mother_node_id"],
+                                                          intent["action"], signed=True)
+                    matches = (root["origin"] == self.origin and root["rp_id"] == self.rp_id
+                               and encoded(displayed) == encoded(job.request))
+                except (KeyError, TypeError, ValueError):
+                    matches = False
+                if not matches:
+                    raise ValueError("prepared grant differs from the displayed request")
                 job.prepared = prepared
                 job.phase = Phase.PREPARED
-                return job.view()
-            if op == "take" and job.phase == Phase.SIGNED:
-                job.phase = Phase.TAKEN
+                self.touch(job)
+                return job.public()
+            if op == "take":
+                if job.phase != Phase.SIGNED or job.taken:
+                    raise ValueError("signed grant is unavailable")
+                job.taken = True
+                self.touch(job)
                 return {"path": str(self.directory / (job.id + ".json"))}
+            if op == "settle":
+                if job.phase != Phase.SIGNED or not job.taken or request["outcome"] not in ("approved", "refused"):
+                    raise ValueError("grant cannot be settled")
+                job.phase = Phase(request["outcome"])
+                job.outcome = request["outcome"]
+                job.reason = request.get("reason")
+                job.decided_at = time.time()
+                self.touch(job)
+                return job.public()
+            if op == "cancel" and job.phase not in TERMINAL and not job.consumed:
+                job.phase = Phase.REFUSED
+                job.consumed = True
+                job.outcome = "refused"
+                job.reason = "cancelled"
+                job.decided_at = time.time()
+                self.touch(job)
+                return job.public()
             raise ValueError("invalid CLI transition")
 
-    def authenticate(self, token):
-        with self.lock:
-            if (not isinstance(token, str) or self.page_token is None
-                    or time.monotonic() >= self.token_deadline
-                    or not secrets.compare_digest(token, self.page_token)):
-                raise ValueError("invalid page capability")
-            self.page_token = None
-            self.cookie = secrets.token_urlsafe(32)
-            self.page_id = secrets.token_urlsafe(32)
-            return {"cookie": self.cookie, "page_id": self.page_id}
-
-    def page(self, op, request, cookie, page_id):
+    def inspect_token(self, token):
         with self.lock:
             self.expire()
-            if op == "release":
-                # A superseded page may acknowledge cancellation using only its
-                # old offer capability. It cannot renew or complete that offer.
-                job = self.owned_offer(request, page_id)
-                job.release()
-                return job.view()
-            if (not self.cookie or not secrets.compare_digest(cookie, self.cookie)
-                    or not secrets.compare_digest(page_id, self.page_id)):
-                raise ValueError("unauthenticated page")
-            active = next((j for j in self.jobs.values()
-                           if j.phase in (Phase.QUEUED, Phase.READY, Phase.PREPARED, Phase.OFFERED)), None)
-            if op == "next":
-                if active is None:
-                    return None
-                if active.phase == Phase.OFFERED:
-                    return {"phase": "waiting", "wait_ms": max(0, int(
-                        (active.offer.deadline - time.monotonic()) * 1000))}
-                if active.phase == Phase.QUEUED:
-                    active.phase = Phase.READY
-                if active.kind == "registration" or active.phase == Phase.PREPARED:
-                    active.phase = Phase.OFFERED
-                    active.offer = Offer(secrets.token_urlsafe(32), page_id,
-                                         time.monotonic() + OFFER_LEASE_SECONDS)
-                return active.view()
-            job = self.owned_offer(request, page_id)
-            if job is not active:
-                raise ValueError("not the active operation")
-            if op == "renew":
-                job.offer.deadline = time.monotonic() + OFFER_LEASE_SECONDS
-                return {"lease_ms": OFFER_LEASE_SECONDS * 1000}
-            if op == "fail":
-                job.phase = Phase.FAILED
-                return job.view()
-            if op != "complete":
-                raise ValueError("unknown page operation")
-            result = request["result"]
-            encoded(result)
-            if job.kind == "registration" and job.phase == Phase.OFFERED:
-                if (set(result) != {"rp_id", "origin", "credential_id", "public_key_sec1"}
-                        or result["origin"] != self.origin or result["rp_id"] != self.rp_id):
-                    raise ValueError("wrong registration origin")
-            elif job.kind == "assertion" and job.phase == Phase.OFFERED:
-                if (set(result) != {"intent", "proof"}
-                        or encoded(result["intent"]) != encoded(job.prepared["intent"])
-                        or result["proof"]["scheme"] != "webauthn-p256-day-key/v1"
-                        or result["proof"]["credential_id"] != job.prepared["root"]["credential_id"]):
-                    raise ValueError("assertion substitution")
-            else:
-                raise ValueError("invalid page transition")
+            job = self.find_token(token)
+            return {"code": job.code, "kind": job.request["kind"], "phase": job.phase.value,
+                    "deadline": job.deadline, "consumed": job.consumed, "asker": job.request["asker"]}
+
+    def display_job(self, display_id):
+        for job in self.jobs.values():
+            if secrets.compare_digest(display_id, job.display_id):
+                return job
+        raise ValueError("unknown display")
+
+    def display(self, display_id):
+        with self.lock:
+            self.expire()
+            job = self.display_job(display_id)
+            value = job.public()
+            value["url"] = self.origin + "/a/" + job.token
+            return value
+
+    def display_qr(self, display_id, kind="svg"):
+        from mct_approval_qr import png as qr_png, svg as qr_svg
+        with self.lock:
+            self.expire()
+            job = self.display_job(display_id)
+            url = self.origin + "/a/" + job.token
+            return qr_svg(url) if kind == "svg" else qr_png(url, scale=8)
+
+    def claim(self, token, subject):
+        with self.lock:
+            self.expire()
+            job = self.find_token(token)
+            if job.phase == Phase.EXPIRED or job.consumed or job.phase != Phase.WAITING:
+                raise ValueError("code is no longer available")
+            subject = text(subject, "subject", 256)
+            if subject != "nicabar":
+                raise ValueError("wrong account")
+            job.cookie = secrets.token_urlsafe(32)
+            job.page_id = secrets.token_urlsafe(32)
+            job.subject = subject
+            job.phase = Phase.OPENED
+            self.touch(job)
+            return {"cookie": job.cookie, "page_id": job.page_id, "id": job.id}
+
+    def page_state(self, cookie, page_id):
+        with self.lock:
+            self.expire()
+            return self.session_job(cookie, page_id).public()
+
+    def complete(self, cookie, page_id, result):
+        with self.lock:
+            self.expire()
+            job = self.session_job(cookie, page_id)
+            if job.request["kind"] != "grant" or job.phase != Phase.PREPARED or job.consumed:
+                raise ValueError("grant is no longer signable")
+            valid = (exact(result, ("intent", "proof"))
+                     and encoded(result["intent"]) == encoded(job.prepared["intent"])
+                     and isinstance(result["proof"], dict)
+                     and result["proof"].get("scheme") == "webauthn-p256-day-key/v1"
+                     and result["proof"].get("credential_id") == job.prepared["root"]["credential_id"])
+            job.consumed = True
+            if not valid:
+                job.phase = Phase.REFUSED
+                job.outcome = "refused"
+                job.reason = "details_mismatch"
+                job.decided_at = time.time()
+                self.touch(job)
+                return job.public()
             try:
                 write_new(self.directory / (job.id + ".json"), result)
             except OSError:
-                job.phase = Phase.FAILED
+                job.phase = Phase.REFUSED
+                job.outcome = "refused"
+                job.reason = "write_failed"
+                job.decided_at = time.time()
+                self.touch(job)
                 raise
             job.phase = Phase.SIGNED
-            return job.view()
+            self.touch(job)
+            return job.public()
 
-    def owned_offer(self, request, page_id):
-        job = self.jobs[request["id"]]
-        if (job.phase != Phase.OFFERED or job.offer is None
-                or not secrets.compare_digest(page_id, job.offer.page_id)
-                or not secrets.compare_digest(request.get("offer", ""), job.offer.id)):
-            raise ValueError("stale or unowned offer")
-        return job
+    def decline(self, cookie, page_id):
+        with self.lock:
+            self.expire()
+            job = self.session_job(cookie, page_id)
+            if job.request["kind"] != "grant" or job.phase != Phase.PREPARED or job.consumed:
+                raise ValueError("grant cannot be declined")
+            job.phase = Phase.DECLINED
+            job.consumed = True
+            job.outcome = "declined"
+            job.decided_at = time.time()
+            self.touch(job)
+            return job.public()
+
+    def proof_request(self, cookie, page_id):
+        with self.lock:
+            self.expire()
+            job = self.session_job(cookie, page_id)
+            if job.request["kind"] != "proof" or job.phase != Phase.OPENED or job.consumed:
+                raise ValueError("proof is unavailable")
+            value = dict(job.request)
+            value.update({"id": job.id, "nonce": job.nonce})
+            return value
+
+    def proof_result(self, cookie, page_id, result):
+        with self.lock:
+            self.expire()
+            job = self.session_job(cookie, page_id)
+            if job.request["kind"] != "proof" or job.phase != Phase.OPENED or job.consumed:
+                raise ValueError("proof is no longer available")
+            job.consumed = True
+            valid = (exact(result, ("outcome", "reason", "subject", "path", "nonce"))
+                     and result["subject"] == job.subject == job.request["expected_subject"]
+                     and result["path"] == job.request["path"] and result["nonce"] == job.nonce)
+            if valid and result["outcome"] == "pass" and result["reason"] == "ok":
+                job.phase, job.outcome, job.reason = Phase.PASSED, "pass", "ok"
+            elif valid and result["outcome"] == "fail" and result["reason"] in ("denied", "not_found"):
+                job.phase, job.outcome, job.reason = Phase.FAILED, "fail", result["reason"]
+            else:
+                job.phase, job.outcome, job.reason = Phase.REFUSED, "refused", "answer_mismatch"
+            job.decided_at = time.time()
+            self.touch(job)
+            return job.public()
+
+    def skip(self, cookie, page_id):
+        with self.lock:
+            self.expire()
+            job = self.session_job(cookie, page_id)
+            if job.request["kind"] != "proof" or job.phase != Phase.OPENED or job.consumed:
+                raise ValueError("proof cannot be skipped")
+            job.phase = Phase.SKIPPED
+            job.consumed = True
+            job.outcome = "skipped"
+            job.reason = "skipped"
+            job.decided_at = time.time()
+            self.touch(job)
+            return job.public()
 
 
 def receive(stream):
@@ -318,30 +555,11 @@ class Service:
     def __init__(self, directory, origin, cert, key, listen=None):
         self.broker = Broker(directory, origin)
         broker = self.broker
-        assets = {"/": ("text/html", "passkey-approval.html"),
-                  "/approve/": ("text/html", "passkey-approval.html"),
-                  "/approval.mjs": ("text/javascript", "passkey-approval.mjs"),
-                  "/passkey-admin.mjs": ("text/javascript", "passkey-admin.mjs")}
 
         class Handler(BaseHTTPRequestHandler):
             def setup(self):
-                self.request.settimeout(5)
-                self.timer = threading.Timer(5, self.abort)
-                self.timer.daemon = True
-                self.timer.start()
+                self.request.settimeout(15)
                 super().setup()
-
-            def abort(self):
-                try:
-                    self.request.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass
-
-            def finish(self):
-                try:
-                    super().finish()
-                finally:
-                    self.timer.cancel()
 
             def reply(self, status, value, content_type="application/json", cookie=None):
                 data = value if isinstance(value, bytes) else encoded(value)
@@ -352,24 +570,39 @@ class Service:
                 self.send_header("Connection", "close")
                 self.send_header("X-Content-Type-Options", "nosniff")
                 self.send_header("Referrer-Policy", "no-referrer")
-                self.send_header("Cross-Origin-Opener-Policy", "same-origin")
-                self.send_header("Content-Security-Policy", "default-src 'none'; script-src 'self'; "
-                                 "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+                self.send_header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; base-uri 'none'")
                 if cookie:
-                    self.send_header("Set-Cookie", "__Host-mct=" + cookie + "; Path=/; Secure; HttpOnly; SameSite=Strict")
+                    self.send_header("Set-Cookie", "__Host-mct-queue=" + cookie
+                                     + "; Path=/; Secure; HttpOnly; SameSite=Strict")
                 self.end_headers()
                 self.wfile.write(data)
 
             def host_ok(self):
                 return self.headers.get_all("Host") == [broker.host]
 
+            def auth(self):
+                cookies = SimpleCookie(self.headers.get("Cookie", ""))
+                cookie = cookies["__Host-mct-queue"].value if "__Host-mct-queue" in cookies else ""
+                return cookie, self.headers.get("X-MCT-Page", "")
+
             def do_GET(self):
-                if not self.host_ok():
-                    return self.reply(421, {"error": "wrong host"})
-                if self.path not in assets:
+                try:
+                    if not self.host_ok():
+                        raise ValueError("wrong host")
+                    if self.path.startswith("/d/") and self.path.endswith(".json"):
+                        display_id = self.path[3:-5]
+                        return self.reply(200, broker.display(display_id))
+                    if self.path.startswith("/d/") and self.path.endswith("/qr.svg"):
+                        display_id = self.path[3:-7]
+                        return self.reply(200, broker.display_qr(display_id), "image/svg+xml")
+                    if self.path.startswith("/d/") and self.path.endswith("/qr.png"):
+                        display_id = self.path[3:-7]
+                        return self.reply(200, broker.display_qr(display_id, "png"), "image/png")
+                    if self.path == "/healthz":
+                        return self.reply(200, {"ok": True})
                     return self.reply(404, {"error": "not found"})
-                mime, name = assets[self.path]
-                self.reply(200, (ROOT / name).read_bytes(), mime)
+                except (ValueError, KeyError, TypeError, RecursionError, OSError):
+                    self.reply(400, {"error": "request refused"})
 
             def do_POST(self):
                 try:
@@ -385,15 +618,26 @@ class Service:
                     if len(body) != size:
                         raise ValueError("incomplete body")
                     request = loads(body)
+                    if self.path == "/api/inspect":
+                        return self.reply(200, broker.inspect_token(request["token"]))
                     if self.path == "/api/session":
-                        session = broker.authenticate(request["token"])
+                        session = broker.claim(request["token"], request["subject"])
                         return self.reply(200, {"page_id": session["page_id"]}, cookie=session["cookie"])
-                    cookies = SimpleCookie(self.headers.get("Cookie", ""))
-                    cookie = cookies["__Host-mct"].value if "__Host-mct" in cookies else ""
-                    if self.path not in ("/api/next", "/api/complete", "/api/fail", "/api/renew", "/api/release"):
+                    cookie, page_id = self.auth()
+                    if self.path == "/api/state":
+                        result = broker.page_state(cookie, page_id)
+                    elif self.path == "/api/complete":
+                        result = broker.complete(cookie, page_id, request["result"])
+                    elif self.path == "/api/decline":
+                        result = broker.decline(cookie, page_id)
+                    elif self.path == "/api/proof-request":
+                        result = broker.proof_request(cookie, page_id)
+                    elif self.path == "/api/proof-result":
+                        result = broker.proof_result(cookie, page_id, request["result"])
+                    elif self.path == "/api/skip":
+                        result = broker.skip(cookie, page_id)
+                    else:
                         raise ValueError("unknown route")
-                    result = broker.page(self.path.removeprefix("/api/"), request, cookie,
-                                         self.headers.get("X-MCT-Page", ""))
                     self.reply(200, result)
                 except (ValueError, KeyError, TypeError, RecursionError, OSError):
                     self.reply(400, {"error": "request refused"})
@@ -455,5 +699,3 @@ class Service:
         self.control.close()
         self.thread.join(6)
         self.http.server_close()
-        # Keep the socket and signed artifacts. A fresh session is required after
-        # shutdown so an interrupted caller cannot attach to a different broker.

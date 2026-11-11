@@ -1,379 +1,78 @@
 #!/usr/bin/env python3
-import http.client
+"""Queue and QR contract tests for the two authoritative request kinds."""
 import importlib.util
-import io
-import json
 from pathlib import Path
-import ssl
-import subprocess
+import sys
 import tempfile
-import threading
-import time
 import unittest
-from types import SimpleNamespace
-from unittest.mock import patch
-from urllib.parse import urlsplit
 
-from passkey_queue import Broker, LIMIT, Service, loads, read_private, rpc
+SCRIPTS = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPTS))
+from mct_approval_qr import code, terminal
+from passkey_queue import Broker, normalize_request
 
-ORIGIN = "https://mct.localhost:18443"
-HOSTED_ORIGIN = "https://approval.example.test:18443"
-
-
-def prepared(origin=ORIGIN, rp_id="mct.localhost"):
-    return {"root": {"origin": origin, "rp_id": rp_id, "credential_id": "fixture"},
-            "challenge": "fixture", "intent": {"nonce": "fixture", "action": {"action": "bootstrap"}}}
+spec = importlib.util.spec_from_file_location("ceremony_acceptance", SCRIPTS / "test-mct-approval-ceremony.py")
+acceptance = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(acceptance)
+CeremonyAcceptanceTests = acceptance.CeremonyAcceptanceTests
 
 
-def signed(value):
-    return {"intent": value["intent"], "proof": {"scheme": "webauthn-p256-day-key/v1",
-            "credential_id": "fixture", "signature": "not-cryptographically-verified-by-broker"}}
-
-
-class DefaultBrowserTests(unittest.TestCase):
-    def load_approve(self):
-        spec = importlib.util.spec_from_file_location(
-            "approve", Path(__file__).with_name("passkey-approve.py"))
-        approve = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(approve)
-        return approve
-
-    def test_open_print_url_supports_headless_remote_handoff(self):
-        approve = self.load_approve()
-        url = HOSTED_ORIGIN + "/approve/#test-only-capability"
-        output = io.StringIO()
-        with patch.object(approve, "private_directory", return_value=Path("unused")), \
-                patch.object(approve, "rpc", return_value={"url": url}), \
-                patch.object(approve.subprocess, "run", side_effect=AssertionError("must not launch")), \
-                patch.object(approve.webbrowser, "open", side_effect=AssertionError("must not launch")), \
-                patch("sys.stdout", output):
-            approve.execute(SimpleNamespace(session="unused", command="open", print_url=True))
-        self.assertEqual(output.getvalue(), url + "\n")
-
-    def test_open_uses_system_default_and_reports_launch_failure(self):
-        approve = self.load_approve()
-        url = ORIGIN + "/approve/#test-only-capability"
-        for platform in ("darwin", "linux"):
-            for success in (True, False):
-                with self.subTest(platform=platform, success=success), \
-                        patch.object(approve.sys, "platform", platform), \
-                        patch.object(approve, "private_directory", return_value=Path("unused")), \
-                        patch.object(approve, "rpc", return_value={"url": url}) as request, \
-                        patch.object(approve.subprocess, "run", return_value=SimpleNamespace(returncode=0 if success else 1)) as launch, \
-                        patch.object(approve.webbrowser, "open", return_value=success) as browser, \
-                        patch.object(approve.webbrowser, "get", side_effect=AssertionError("must use system default")), \
-                        patch("builtins.print"):
-                    args = SimpleNamespace(session="unused", command="open", print_url=False)
-                    if success:
-                        approve.execute(args)
-                    else:
-                        with self.assertRaisesRegex(RuntimeError, "could not open the default browser"):
-                            approve.execute(args)
-                    request.assert_called_once_with(Path("unused"), {"op": "open"})
-                    if platform == "darwin":
-                        launch.assert_called_once_with(["open", url], capture_output=True)
-                        browser.assert_not_called()
-                    else:
-                        browser.assert_called_once_with(url)
-                        launch.assert_not_called()
-
-
-class QueueTests(unittest.TestCase):
-    def test_open_uses_distinct_capability_path_for_authenticated_reload(self):
-        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as directory:
-            url = urlsplit(Broker(directory, ORIGIN).cli({"op": "open"})["url"])
-            self.assertEqual(url.path, "/approve/")
-            self.assertTrue(url.fragment)
-            self.assertFalse(url.query)
-
-    def test_hosted_origin_derives_exact_rp_for_registration_and_publish(self):
-        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as directory:
-            broker = Broker(directory, HOSTED_ORIGIN)
-            token = broker.cli({"op": "open"})["url"].split("#")[1]
-            page = broker.authenticate(token)
-
-            registration = broker.cli({"op": "enqueue", "kind": "registration"})
-            offered = broker.page("next", {}, **page)
-            root = {"rp_id": "approval.example.test", "origin": HOSTED_ORIGIN,
-                    "credential_id": "registration-fixture", "public_key_sec1": "fixture"}
-            for field, wrong in (("rp_id", "mct.localhost"),
-                                 ("origin", "https://evil.example.test")):
-                substituted = dict(root, **{field: wrong})
-                with self.assertRaises(ValueError):
-                    broker.page("complete", {"id": registration["id"], "offer": offered["offer"],
-                                             "result": substituted}, **page)
-            broker.page("complete", {"id": registration["id"], "offer": offered["offer"],
-                                     "result": root}, **page)
-            broker.cli({"op": "take", "id": registration["id"]})
-
-            assertion = broker.cli({"op": "enqueue", "kind": "assertion"})
-            broker.page("next", {}, **page)
-            for wrong in (prepared(HOSTED_ORIGIN, "mct.localhost"),
-                          prepared("https://evil.example.test", "approval.example.test")):
-                with self.assertRaises(ValueError):
-                    broker.cli({"op": "publish", "id": assertion["id"], "prepared": wrong})
-            broker.cli({"op": "publish", "id": assertion["id"],
-                        "prepared": prepared(HOSTED_ORIGIN, "approval.example.test")})
-            self.assertEqual(broker.page("next", {}, **page)["phase"], "offered")
-
+class QRAndTypeContractTests(unittest.TestCase):
     def setUp(self):
-        self.directory = tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve())
-        self.addCleanup(self.directory.cleanup)
-        self.broker = Broker(self.directory.name, ORIGIN)
-        token = self.broker.cli({"op": "open"})["url"].split("#")[1]
-        self.cookie = self.broker.authenticate(token)
-        self.offers = {}
+        self.temp = tempfile.TemporaryDirectory(prefix=".mct-queue-test-", dir=Path.cwd())
+        self.directory = Path(self.temp.name)
+        self.directory.chmod(0o700)
+        self.broker = Broker(self.directory, "https://mct-approval.nicabar.org")
 
-    def queue(self):
-        return self.broker.cli({"op": "enqueue", "kind": "assertion"})["id"]
+    def tearDown(self):
+        self.temp.cleanup()
 
-    def page(self, op, **args):
-        if "id" in args:
-            args.setdefault("offer", self.offers.get(args["id"], ""))
-        result = self.broker.page(op, args, **self.cookie)
-        if result and result.get("phase") == "offered":
-            self.offers[result["id"]] = result["offer"]
-        return result
+    def test_qr_is_version_4_m_with_packet_terminal_dimensions(self):
+        job = self.broker.cli({"op": "enqueue", "request": acceptance.grant_request()})
+        qr = code(job["url"])
+        self.assertEqual(qr.version, 4)
+        self.assertEqual(qr.error, "M")
+        rows = terminal(job["url"], ansi=False).splitlines()
+        self.assertEqual((len(rows), len(rows[0])), (21, 41))
+        self.assertTrue(all(len(row) == 41 for row in rows))
+        image = self.broker.display_qr(job["display_id"], "png")
+        self.assertEqual(image[:8], b"\x89PNG\r\n\x1a\n")
+        self.assertEqual((int.from_bytes(image[16:20], "big"), int.from_bytes(image[20:24], "big")),
+                         (328, 328))
 
-    def test_queue_requires_foreground_claim_before_prepare_and_single_take(self):
-        job_id = self.queue()
-        self.assertEqual(self.broker.cli({"op": "status", "id": job_id})["phase"], "queued")
+    def test_only_grant_and_proof_envelopes_are_accepted(self):
+        self.assertEqual(normalize_request(acceptance.grant_request())["kind"], "grant")
+        self.assertEqual(normalize_request(acceptance.proof_request())["kind"], "proof")
         with self.assertRaises(ValueError):
-            self.broker.cli({"op": "publish", "id": job_id, "prepared": prepared()})
-        self.assertEqual(self.page("next")["phase"], "ready")
-        self.broker.cli({"op": "publish", "id": job_id, "prepared": prepared()})
+            normalize_request({"kind": "registration"})
+        changed = acceptance.proof_request() | {"required_group": "other"}
         with self.assertRaises(ValueError):
-            self.page("complete", id=job_id, result=signed(prepared()))
-        self.assertEqual(self.page("next")["phase"], "offered")
-        self.assertEqual(self.page("next")["phase"], "waiting",
-                         "a second tab must not receive the same ceremony")
-        self.page("complete", id=job_id, result=signed(prepared()))
-        with self.assertRaises(ValueError):
-            self.page("complete", id=job_id, result=signed(prepared()))
-        with self.assertRaises(ValueError):
-            self.page("release", id=job_id)
-        path = Path(self.broker.cli({"op": "take", "id": job_id})["path"])
-        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-        self.assertEqual(read_private(path), signed(prepared()))
-        with self.assertRaises(ValueError):
-            self.broker.cli({"op": "take", "id": job_id})
+            normalize_request(changed)
 
-    def test_page_cannot_enqueue_publish_substitute_or_complete_unclaimed_work(self):
-        job_id = self.queue()
-        for op in ("enqueue", "publish", "complete"):
-            with self.assertRaises(ValueError):
-                self.page(op, id=job_id, result=signed(prepared()))
-        self.page("next")
-        self.broker.cli({"op": "publish", "id": job_id, "prepared": prepared()})
-        self.page("next")
-        wrong = signed(prepared())
-        wrong["intent"]["nonce"] = "substitution"
-        with self.assertRaises(ValueError):
-            self.page("complete", id=job_id, result=wrong)
-        wrong = signed(prepared())
-        wrong["proof"]["credential_id"] = "other-root"
-        with self.assertRaises(ValueError):
-            self.page("complete", id=job_id, result=wrong)
-        self.assertFalse(list(Path(self.directory.name).glob("*.json")))
+    def test_display_capability_is_read_only_and_has_no_session_secret(self):
+        job = self.broker.cli({"op": "enqueue", "request": acceptance.proof_request()})
+        before = self.broker.display(job["display_id"])
+        after = self.broker.display(job["display_id"])
+        self.assertEqual(before["phase"], "waiting")
+        self.assertEqual(after["phase"], "waiting")
+        self.assertEqual(after["url"], job["url"])
+        self.assertNotIn("cookie", after)
+        self.assertNotIn("page_id", after)
 
-    def test_one_use_page_token_expiry_cookie_rotation_and_capacity(self):
-        token = self.broker.cli({"op": "open"})["url"].split("#")[1]
-        self.broker.authenticate(token)
+    def test_code_capability_is_128_bit_single_use(self):
+        job = self.broker.cli({"op": "enqueue", "request": acceptance.grant_request()})
+        self.assertGreaterEqual(len(job["token"]), 22)
+        self.broker.claim(job["token"], "nicabar")
         with self.assertRaises(ValueError):
-            self.broker.authenticate(token)
+            self.broker.claim(job["token"], "nicabar")
+
+    def test_wrong_rp_or_origin_cannot_be_published(self):
+        job = self.broker.cli({"op": "enqueue", "request": acceptance.grant_request()})
+        self.broker.claim(job["token"], "nicabar")
+        wrong = acceptance.prepared()
+        wrong["root"] = dict(wrong["root"], rp_id="evil.example.org")
         with self.assertRaises(ValueError):
-            self.page("next")
-        token = self.broker.cli({"op": "open"})["url"].split("#")[1]
-        with patch("passkey_queue.time.monotonic", return_value=time.monotonic() + 121):
-            with self.assertRaises(ValueError):
-                self.broker.authenticate(token)
-        for _ in range(8):
-            self.queue()
-        with self.assertRaises(ValueError):
-            self.queue()
-        with patch("passkey_queue.time.monotonic", return_value=time.monotonic() + 3601):
-            self.queue()
-            self.assertEqual(len(self.broker.jobs), 1)
-
-    def test_duplicate_json_and_unsafe_sessions_are_refused(self):
-        with self.assertRaises(ValueError):
-            loads('{"op":"next","op":"enqueue"}')
-        with self.assertRaises(ValueError):
-            loads('{"value":NaN}')
-        link = Path(self.directory.name) / "alias"
-        link.symlink_to(self.directory.name)
-        with self.assertRaises(ValueError):
-            Broker(link, ORIGIN)
-
-    def test_cancelled_or_expired_offer_cannot_be_completed_or_taken(self):
-        for expire in (False, True):
-            job_id = self.queue()
-            self.page("next")
-            self.broker.cli({"op": "publish", "id": job_id, "prepared": prepared()})
-            self.page("next")
-            if expire:
-                with patch("passkey_queue.time.monotonic", return_value=time.monotonic() + 3601):
-                    self.assertEqual(self.broker.cli({"op": "status", "id": job_id})["phase"], "failed")
-            else:
-                self.broker.cli({"op": "cancel", "id": job_id})
-            with self.assertRaises(ValueError):
-                self.page("complete", id=job_id, result=signed(prepared()))
-            with self.assertRaises(ValueError):
-                self.broker.cli({"op": "take", "id": job_id})
-        self.assertFalse(list(Path(self.directory.name).glob("*.json")))
-
-    def test_silent_offered_page_can_be_replaced_without_accepting_its_late_completion(self):
-        job_id = self.broker.cli({"op": "enqueue", "kind": "registration"})["id"]
-        page_a = self.cookie
-        offer_a = self.page("next")
-        self.assertEqual(offer_a["phase"], "offered")
-        token = self.broker.cli({"op": "open"})["url"].split("#")[1]
-        self.cookie = self.broker.authenticate(token)
-        self.assertEqual(self.page("next")["phase"], "waiting")
-        with patch("passkey_queue.time.monotonic", return_value=time.monotonic() + 31):
-            offered = self.page("next")
-            self.assertIsNotNone(offered, "an orphaned offer blocked the replacement page")
-            self.assertEqual(offered["id"], job_id)
-            self.assertNotEqual(offered["offer"], offer_a["offer"])
-            result = {"rp_id": "mct.localhost", "origin": ORIGIN,
-                      "credential_id": "registration-fixture", "public_key_sec1": "fixture"}
-            with self.assertRaises(ValueError):
-                self.broker.page("complete", {"id": job_id, "offer": offer_a["offer"],
-                                              "result": result}, **page_a)
-            self.page("complete", id=job_id, result=result)
-            path = self.broker.cli({"op": "take", "id": job_id})["path"]
-            self.assertEqual(read_private(path), result)
-            with self.assertRaises(ValueError):
-                self.broker.page("complete", {"id": job_id, "offer": offer_a["offer"],
-                                              "result": result}, **page_a)
-            self.assertEqual(read_private(path), result)
-
-    def test_reauthentication_fences_shared_cookies_and_waits_for_cancellation(self):
-        job_id = self.queue()
-        self.page("next")
-        self.broker.cli({"op": "publish", "id": job_id, "prepared": prepared()})
-        offer_a = self.page("next")
-        page_a = self.cookie
-        token = self.broker.cli({"op": "open"})["url"].split("#")[1]
-        self.cookie = self.broker.authenticate(token)
-        self.assertEqual(self.page("next")["phase"], "waiting")
-        old_request = {"id": job_id, "offer": offer_a["offer"]}
-        with self.assertRaises(ValueError):
-            self.broker.page("renew", old_request, **page_a)
-        with self.assertRaises(ValueError):
-            self.broker.page("complete", dict(old_request, result=signed(prepared())),
-                             cookie=self.cookie["cookie"], page_id=page_a["page_id"])
-        with self.assertRaises(ValueError):
-            self.broker.page("release", old_request, **self.cookie)
-        self.broker.page("release", old_request, **page_a)
-        offer_b = self.page("next")
-        self.assertEqual(offer_b["id"], job_id)
-        self.assertEqual(offer_b["prepared"], prepared())
-        self.assertNotEqual(offer_b["offer"], offer_a["offer"])
-        for op in ("renew", "release", "complete"):
-            with self.assertRaises(ValueError):
-                self.broker.page(op, dict(old_request, result=signed(prepared())), **page_a)
-        self.page("complete", id=job_id, result=signed(prepared()))
-        path = self.broker.cli({"op": "take", "id": job_id})["path"]
-        self.assertEqual(read_private(path), signed(prepared()))
-
-    def test_heartbeat_renews_only_current_offer_and_expiry_fences_same_page(self):
-        start = time.monotonic()
-        with patch("passkey_queue.time.monotonic", return_value=start):
-            job_id = self.broker.cli({"op": "enqueue", "kind": "registration"})["id"]
-            offered = self.page("next")
-        with patch("passkey_queue.time.monotonic", return_value=start + 25):
-            self.assertEqual(self.page("renew", id=job_id)["lease_ms"], 30000)
-        with patch("passkey_queue.time.monotonic", return_value=start + 31):
-            self.assertEqual(self.page("next")["phase"], "waiting")
-        with patch("passkey_queue.time.monotonic", return_value=start + 55):
-            with self.assertRaises(ValueError):
-                self.page("renew", id=job_id)
-            replacement = self.page("next")
-            self.assertEqual(replacement["id"], job_id)
-            self.assertNotEqual(replacement["offer"], offered["offer"])
-            with self.assertRaises(ValueError):
-                self.page("release", id=job_id, offer=offered["offer"])
-            with self.assertRaises(ValueError):
-                self.page("complete", id=job_id, offer=offered["offer"], result={
-                    "rp_id": "mct.localhost", "origin": ORIGIN,
-                    "credential_id": "registration-fixture", "public_key_sec1": "fixture"})
-
-    def test_existing_artifact_is_never_overwritten(self):
-        job_id = self.queue()
-        self.page("next")
-        self.broker.cli({"op": "publish", "id": job_id, "prepared": prepared()})
-        self.page("next")
-        path = Path(self.directory.name) / (job_id + ".json")
-        path.write_text("existing evidence")
-        with self.assertRaises(FileExistsError):
-            self.page("complete", id=job_id, result=signed(prepared()))
-        self.assertEqual(path.read_text(), "existing evidence")
-        self.assertEqual(self.broker.cli({"op": "status", "id": job_id})["phase"], "failed")
-
-
-class HTTPTests(unittest.TestCase):
-    def test_private_queue_can_listen_on_a_separate_loopback_port(self):
-        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as directory:
-            directory = Path(directory)
-            cert, key = directory / "cert.pem", directory / "key.pem"
-            subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
-                            "-keyout", str(key), "-out", str(cert), "-days", "1",
-                            "-subj", "/CN=mct.localhost"], check=True, capture_output=True)
-            service = Service(directory, ORIGIN, cert, key, listen=("127.0.0.1", 0))
-            try:
-                self.assertEqual(service.http.server_address[0], "127.0.0.1")
-                self.assertNotEqual(service.http.server_port, 18443)
-                self.assertEqual(service.broker.origin, ORIGIN)
-            finally:
-                service.control.close()
-                service.http.server_close()
-
-    def test_https_auth_origin_host_route_and_body_guards(self):
-        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as directory:
-            directory = Path(directory)
-            cert, key = directory / "cert.pem", directory / "key.pem"
-            subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
-                            "-keyout", str(key), "-out", str(cert), "-days", "1",
-                            "-subj", "/CN=mct.localhost"], check=True, capture_output=True)
-            service = Service(directory, "https://mct.localhost:0", cert, key)
-            with service as server:
-                thread = threading.Thread(target=server.serve_forever, daemon=True)
-                thread.start()
-                origin = "https://mct.localhost:0"
-                def post(route, data, **headers):
-                    connection = http.client.HTTPSConnection("127.0.0.1", server.server_port,
-                                                            context=ssl._create_unverified_context())
-                    merged = {"Host": "mct.localhost:0", "Origin": origin, "Content-Type": "application/json"}
-                    merged.update(headers)
-                    connection.request("POST", route, json.dumps(data), merged)
-                    response = connection.getresponse()
-                    result = response.status, response.getheaders(), response.read()
-                    connection.close()
-                    return result
-                try:
-                    self.assertEqual(server.server_address[0], "127.0.0.1")
-                    self.assertEqual(post("/api/next", {})[0], 400)
-                    url = rpc(directory, {"op": "open"})["url"]
-                    status, headers, body = post("/api/session", {"token": url.split("#")[1]})
-                    self.assertEqual(status, 200)
-                    cookie = dict(headers)["Set-Cookie"]
-                    self.assertIn("Secure; HttpOnly; SameSite=Strict", cookie)
-                    page_header = {"X-MCT-Page": json.loads(body)["page_id"]}
-                    self.assertEqual(post("/api/next", {}, Cookie=cookie)[0], 400)
-                    self.assertEqual(post("/api/next", {}, Cookie=cookie, **page_header)[0], 200)
-                    for route, data, headers in [
-                        ("/api/next", {}, {"Host": "evil.test"}),
-                        ("/api/next", {}, {"Origin": "https://evil.test"}),
-                        ("/api/enqueue", {"kind": "assertion"}, {}),
-                        ("/api/next", {}, {"Content-Length": str(LIMIT + 1)}),
-                        ("/api/next", {}, {"Content-Type": "text/plain"}),
-                    ]:
-                        self.assertEqual(post(route, data, Cookie=cookie, **page_header, **headers)[0], 400)
-                    self.assertFalse(service.broker.jobs)
-                finally:
-                    server.shutdown()
-                    thread.join()
+            self.broker.cli({"op": "publish", "id": job["id"], "prepared": wrong})
 
 
 if __name__ == "__main__":

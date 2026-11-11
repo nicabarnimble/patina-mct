@@ -89,7 +89,8 @@ def main():
         service = make_server(args.origin, args.cert, args.key)
     with service as server:
         if args.listen:
-            print(f"Private approval queue listening at {args.listen} for gate origin {args.origin}. Ctrl-C to stop.",
+            host, port = server.server_address
+            print(f"Private approval queue listening at {host}:{port} for gate origin {args.origin}. Ctrl-C to stop.",
                   flush=True)
         else:
             print(f"Open {args.origin} in a browser with 1Password enabled. Ctrl-C to stop.",
