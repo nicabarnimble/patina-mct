@@ -55,10 +55,12 @@ run_specs() {
   python3 scripts/test-low-security-boundaries.py || status=1
   python3 scripts/test-scan-osv.py || status=1
   node --test scripts/passkey-admin.test.mjs scripts/mct-approval-protocol.test.mjs scripts/pocketid-approval-gate.test.mjs || status=1
+  node --test scripts/push-policy.test.mjs || status=1
   node --test docs/evidence/nic63-slice1/prebuilt-cargo.test.mjs || status=1
   python3 scripts/test-passkey-tap.py || status=1
   python3 scripts/test-passkey-queue.py || status=1
   python3 scripts/test-mother-systemd.py || status=1
+  python3 scripts/test-prepush.py || status=1
   python3 scripts/test-ci-tier0.py || status=1
   bash scripts/test-container-package.sh || status=1
   return "$status"

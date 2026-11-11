@@ -4,11 +4,14 @@ import {execFile, spawn} from 'node:child_process';
 import {createHash, generateKeyPairSync, sign} from 'node:crypto';
 import {access, chmod, mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {createServer as createHttpsServer, request as httpsRequest} from 'node:https';
+import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
+import {pathToFileURL} from 'node:url';
 import {promisify} from 'node:util';
-import {run as runGate} from './pocketid-approval-gate.mjs';
-import {signEnvelope, verifyEnvelope} from './mct-approval-protocol.mjs';
 
+const SOURCE_ROOT = resolve(process.env.MCT_SOURCE_ROOT || join(import.meta.dirname, '..'));
+const {run: runGate} = await import(pathToFileURL(join(SOURCE_ROOT, 'scripts/pocketid-approval-gate.mjs')));
+const {signEnvelope, verifyEnvelope} = await import(pathToFileURL(join(SOURCE_ROOT, 'scripts/mct-approval-protocol.mjs')));
 const exec = promisify(execFile);
 const sleep = milliseconds => new Promise(resolvePromise => setTimeout(resolvePromise, milliseconds));
 async function eventually(task, timeout = 15000) {
@@ -99,8 +102,9 @@ async function scanAndSignIn(page, url) {
 }
 
 test('hosted non-localhost QR flows complete one Mother grant and one NIC-132 proof', {timeout: 180000}, async t => {
-  const directory = await mkdtemp(join(process.cwd(), '.mct-qr-hosted-'));
+  const directory = await mkdtemp(join(tmpdir(), 'mct-qr-hosted-'));
   const session = join(directory, 'session'); const runDirectory = join(directory, 'run'); const mother = join(runDirectory, 'mother');
+  await chmod(directory, 0o700);
   await mkdir(session, {mode: 0o700}); await mkdir(runDirectory, {mode: 0o700}); await mkdir(mother, {mode: 0o700});
   const {cert, key, spki} = await certificate(directory);
   let gatePort, queuePort, issuerPort, wikiPort;
@@ -145,8 +149,9 @@ test('hosted non-localhost QR flows complete one Mother grant and one NIC-132 pr
     });
     wikiServer.listen(0, '127.0.0.1'); await new Promise(resolvePromise => wikiServer.once('listening', resolvePromise));
     wikiPort = wikiServer.address().port;
-    queue = spawn('python3', ['scripts/serve-passkey-tap.py', '--session', session, '--origin', origin,
-      '--listen', '127.0.0.1:0', '--cert', cert, '--key', key], {env: {...process.env, PYTHONDONTWRITEBYTECODE: '1'}});
+    queue = spawn('python3', [join(SOURCE_ROOT, 'scripts/serve-passkey-tap.py'), '--session', session, '--origin', origin,
+      '--listen', '127.0.0.1:0', '--cert', cert, '--key', key],
+    {cwd: SOURCE_ROOT, env: {...process.env, PYTHONDONTWRITEBYTECODE: '1'}});
     const queueOutput = processOutput(queue);
     await eventually(async () => {
       if (queue.exitCode !== null) throw new Error(queueOutput.stderr || `queue exited ${queue.exitCode}`);
@@ -193,9 +198,10 @@ test('hosted non-localhost QR flows complete one Mother grant and one NIC-132 pr
     assert.equal(typeof rootResult.result.value, 'string', JSON.stringify(rootResult));
     const root = JSON.parse(rootResult.result.value); assert.equal(root.origin, origin); assert.equal(root.rp_id, 'mct-approval.nicabar.org');
     const pin = join(runDirectory, 'registered-root.json'); await writeFile(pin, JSON.stringify(root), {mode: 0o600});
-    const binary = resolve(process.env.MCT_BINARY || 'target/debug/mct-daemon');
-    grant = spawn('python3', ['scripts/passkey-approve.py', '--session', session, '--binary', binary, 'bootstrap',
-      '--root', mother, '--mother', 'unraid-mother', '--ledger-id', 'ledger-hosted', '--registered-root', pin], {env: {...process.env, PYTHONDONTWRITEBYTECODE:'1'}});
+    const binary = resolve(SOURCE_ROOT, process.env.MCT_BINARY || 'target/debug/mct-daemon');
+    grant = spawn('python3', [join(SOURCE_ROOT, 'scripts/passkey-approve.py'), '--session', session, '--binary', binary, 'bootstrap',
+      '--root', mother, '--mother', 'unraid-mother', '--ledger-id', 'ledger-hosted', '--registered-root', pin],
+    {cwd: SOURCE_ROOT, env: {...process.env, PYTHONDONTWRITEBYTECODE:'1'}});
     const grantOutput = processOutput(grant);
     const grantUrl = await eventually(async () => { const match = grantOutput.stdout.match(/https:\/\/mct-approval\.nicabar\.org\/a\/[A-Za-z0-9_-]+/); assert(match, grantOutput.stderr + grantOutput.stdout); return match[0]; });
     await scanAndSignIn(page, grantUrl);
@@ -204,8 +210,9 @@ test('hosted non-localhost QR flows complete one Mother grant and one NIC-132 pr
     await eventually(async () => { const state = await page('Runtime.evaluate', {expression: 'JSON.stringify({url:location.href,text:document.body.innerText})', returnByValue: true}); assert.notEqual(grant.exitCode, null, state.result.value + grantOutput.stderr + grantOutput.stdout); }, 60000);
     assert.equal(await exitCode(grant), 0, grantOutput.stderr + grantOutput.stdout);
     assert.match(grantOutput.stdout, /✓ Approved/);
-    proof = spawn('python3', ['scripts/passkey-approve.py', '--session', session, 'proof', '--title', 'The Example Handbook',
-      '--path', '/library/example-handbook.pdf', '--why', 'Checking the library release works for you (NIC-132)'], {env: {...process.env, PYTHONDONTWRITEBYTECODE:'1'}});
+    proof = spawn('python3', [join(SOURCE_ROOT, 'scripts/passkey-approve.py'), '--session', session, 'proof', '--title', 'The Example Handbook',
+      '--path', '/library/example-handbook.pdf', '--why', 'Checking the library release works for you (NIC-132)'],
+    {cwd: SOURCE_ROOT, env: {...process.env, PYTHONDONTWRITEBYTECODE:'1'}});
     const proofOutput = processOutput(proof);
     const proofUrl = await eventually(async () => { const match = proofOutput.stdout.match(/https:\/\/mct-approval\.nicabar\.org\/a\/[A-Za-z0-9_-]+/); assert(match, proofOutput.stderr + proofOutput.stdout); return match[0]; });
     await scanAndSignIn(page, proofUrl);

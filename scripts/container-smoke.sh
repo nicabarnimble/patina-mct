@@ -12,6 +12,12 @@ command -v docker >/dev/null || { printf 'container-smoke: docker is required\n'
 source_commit=$(git rev-parse HEAD)
 source_tree=$(git rev-parse 'HEAD^{tree}')
 lock_sha256=$(sha256sum Cargo.lock | cut -d' ' -f1)
+product_version=$(python3 - <<'PY'
+import tomllib
+with open('Cargo.toml', 'rb') as handle:
+    print(tomllib.load(handle)['workspace']['package']['version'])
+PY
+)
 short=${source_commit:0:12}
 image_ref=${MCT_IMAGE_REF:-patina-mct-mother:$short}
 smoke_ref=${MCT_SMOKE_IMAGE_REF:-patina-mct-mother-smoke:$short}
@@ -23,6 +29,7 @@ build_args=(
   --build-arg "SOURCE_COMMIT=$source_commit"
   --build-arg "SOURCE_TREE=$source_tree"
   --build-arg "LOCK_SHA256=$lock_sha256"
+  --build-arg "PRODUCT_VERSION=$product_version"
 )
 
 # This is the independent clean compilation. Network is available to the
@@ -35,6 +42,7 @@ docker build "${build_args[@]}" --target smoke -t "$smoke_ref" .
 [[ $(docker image inspect "$image_ref" --format '{{.Architecture}}/{{.Os}}') == amd64/linux ]]
 [[ $(docker image inspect "$image_ref" --format '{{.Config.User}}') == 10001:10001 ]]
 [[ $(docker image inspect "$image_ref" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}') == "$source_commit" ]]
+[[ $(docker image inspect "$image_ref" --format '{{index .Config.Labels "org.opencontainers.image.version"}}') == "$product_version" ]]
 [[ $(docker image inspect "$image_ref" --format '{{index .Config.Labels "io.patina.mct.source-tree"}}') == "$source_tree" ]]
 [[ $(docker image inspect "$image_ref" --format '{{index .Config.Labels "io.patina.mct.cargo-lock-sha256"}}') == "$lock_sha256" ]]
 
@@ -58,7 +66,7 @@ archive="$output/patina-mct-mother-${short}-linux-amd64.tar.gz"
 docker save "$image_ref" | gzip -n > "$archive"
 sha256sum "$archive" > "$archive.sha256"
 docker image inspect "$image_ref" > "$output/patina-mct-mother-${short}-image-inspect.json"
-printf 'source_commit=%s\nsource_tree=%s\nlock_sha256=%s\nimage_ref=%s\nimage_id=%s\narchive=%s\narchive_sha256=%s\n' \
-  "$source_commit" "$source_tree" "$lock_sha256" "$image_ref" \
+printf 'source_commit=%s\nsource_tree=%s\nlock_sha256=%s\nproduct_version=%s\nimage_ref=%s\nimage_id=%s\narchive=%s\narchive_sha256=%s\n' \
+  "$source_commit" "$source_tree" "$lock_sha256" "$product_version" "$image_ref" \
   "$(docker image inspect "$image_ref" --format '{{.Id}}')" "$archive" \
   "$(cut -d' ' -f1 "$archive.sha256")"

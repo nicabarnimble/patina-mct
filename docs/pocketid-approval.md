@@ -163,6 +163,21 @@ request ID, nonce, path, subject, outcome pair and times server-side. Valid fail
 forgery, mismatch, expiry and replay all leave no authority; accepted pass/fail and
 refusal consume the code. A retry requires a new QR.
 
+## Verification
+
+The required pre-push gate runs Tier-0, builds the release Mother with Cargo offline,
+and drives the hosted QR approval and proof flow against that release binary:
+
+```sh
+bash scripts/prepush.sh origin/main
+```
+
+Install the committed hook with `bash scripts/install-git-hooks.sh`. For SSH remotes,
+the installer also adds a repository-local keepalive when no custom
+`core.sshCommand` exists, so the remote cannot expire during the full gate. The
+narrower deployment composition remains available as
+`bash scripts/check-deploy-together.sh`.
+
 ## Verification boundary
 
 The hosted browser regression uses non-localhost HTTPS names, a mocked Pocket ID

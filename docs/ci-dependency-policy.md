@@ -46,3 +46,14 @@ is unchanged, including the disabled disk cache. No new suppression or scan
 exclusion was added. These are upstream runtime advisories; this update does not
 claim every affected API is reachable through MCT. The same OSV v2.7.0 scan
 changed from exit 1 before the patch to exit 0 afterward.
+
+## PR #117 SQLite patch
+
+The unified pre-push gate's fresh advisory database reported
+[RUSTSEC-2026-0459](https://rustsec.org/advisories/RUSTSEC-2026-0459.html)
+in bundled SQLite. The workspace now uses `rusqlite` 0.41 with
+`libsqlite3-sys` 0.39.1, which bundles SQLite 3.54.1. The `fallible_uint`
+feature preserves the existing checked `u64` and `usize` SQL conversions.
+Both root and fuzz lockfiles select the patched SQLite source; regenerating the
+fuzz lockfile also brings its Wasmtime graph to the workspace's existing 49.0.5
+minimum. No advisory suppression or scan exclusion was added.

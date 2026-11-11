@@ -6,7 +6,8 @@ Cursor loads every child of this directory that contains `SKILL.md`. Pi discover
 
 This directory holds `poteto-mode` and the `principle-*` skills from pstack 0.15.36. Lauren Tan holds the copyright. The license is MIT. The text is `PSTACK-LICENSE`, in this directory beside those skills. `diff -rq` against that plugin's `skills` tree reported the copies identical.
 
-`ub-mode` is user-authored. `PSTACK-LICENSE` covers the pstack skills only.
+`ub-mode` is user-authored. `correct` is the repository correction method.
+`PSTACK-LICENSE` covers the pstack skills only.
 
 ## Refresh the pstack skills
 
