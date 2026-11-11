@@ -27,6 +27,7 @@ expect_refused unpinned-builder \
   'rust:1.96.0-bookworm@sha256:' 'rust:1.96.0-bookworm#sha256:'
 expect_refused root-runtime 'USER 10001:10001' 'USER 0:0'
 expect_refused online-compile ' --offline --target' ' --target'
+expect_refused hardcoded-product-version '${PRODUCT_VERSION}' '0.2.0'
 expect_refused host-network '--network none' '--network host' scripts/container-smoke.sh
 
-printf 'container-package-test: 4/4 unsafe mutations refused\n'
+printf 'container-package-test: 5/5 unsafe mutations refused\n'

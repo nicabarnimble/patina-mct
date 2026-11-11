@@ -13,9 +13,13 @@ need scripts/container-smoke.sh
 
 contains Dockerfile 'ARG RUST_IMAGE=rust:1.96.0-bookworm@sha256:'
 contains Dockerfile 'ARG RUNTIME_IMAGE=debian:bookworm-slim@sha256:'
+contains Dockerfile 'ARG PRODUCT_VERSION'
 contains Dockerfile "FROM --platform=linux/amd64 \${RUST_IMAGE} AS build"
 contains Dockerfile "FROM --platform=linux/amd64 \${RUNTIME_IMAGE} AS mother"
 contains Dockerfile 'cargo build --release --locked --offline --target x86_64-unknown-linux-gnu'
+contains Dockerfile 'mct-daemon ${PRODUCT_VERSION}'
+contains Dockerfile '"version":"%s"'
+contains Dockerfile 'org.opencontainers.image.version="${PRODUCT_VERSION}"'
 contains Dockerfile 'USER 10001:10001'
 contains Dockerfile 'HEALTHCHECK'
 contains Dockerfile 'mct-daemon", "status", "--uds", "/var/lib/mct/control.sock", "--json"'
@@ -34,6 +38,7 @@ contains scripts/container-smoke.sh 'no-new-privileges'
 contains scripts/container-smoke.sh '--pids-limit'
 contains scripts/container-smoke.sh '--memory'
 contains scripts/container-smoke.sh 'docker volume create'
+contains scripts/container-smoke.sh '--build-arg "PRODUCT_VERSION=$product_version"'
 contains Dockerfile 'nic131_repair_governed_peers_exchange_receiver_issued_proof_and_call'
 
 if grep -Eq '(^|[[:space:]])(--privileged|--network[=[:space:]]+host|/var/run/docker\.sock|seccomp[=:]unconfined)' "$root/scripts/container-smoke.sh"; then
