@@ -6,7 +6,8 @@ Cursor loads every child of this directory that contains `SKILL.md`. Pi discover
 
 This directory holds `poteto-mode` and the `principle-*` skills from pstack 0.15.36. Lauren Tan holds the copyright. The license is MIT. The text is `PSTACK-LICENSE`, in this directory beside those skills. `diff -rq` against that plugin's `skills` tree reported the copies identical.
 
-`ub-mode` is user-authored. `PSTACK-LICENSE` covers the pstack skills only.
+`ub-mode` is user-authored. `correct` is the repository correction method.
+`PSTACK-LICENSE` covers the pstack skills only.
 
 ## Refresh the pstack skills
 
@@ -17,6 +18,18 @@ This directory holds `poteto-mode` and the `principle-*` skills from pstack 0.15
 5. For a new skill directory, add `.pi/skills/<name>` as a symlink to `../../.cursor/skills/<name>`.
 6. Run `find .cursor/skills -name SKILL.md`. The list must include `poteto-mode`, `ub-mode`, and every `principle-*` skill named in the Principles section of `poteto-mode/SKILL.md`.
 
+## Restored from pstack for NIC-123 build
+
+Copied from Cursor plugin cache `cursor-public/pstack` (identical tree used for poteto/principles) without replacing existing directories:
+
+- `tdd`
+- `blast-radius`
+- `interrogate`
+- `statechart`
+- `maintain-formal-verification-skill`
+
+`.pi/skills/<name>` symlinks added for Pi discovery.
+
 ## Skills poteto-mode asks for that are not here
 
 `poteto-mode` tells the agent to read these pstack skills. This directory does not contain them.
@@ -26,14 +39,12 @@ This directory holds `poteto-mode` and the `principle-*` skills from pstack 0.15
 - `benchmark-checklist`
 - `figure-it-out`
 - `how`
-- `interrogate`
 - `ketchup`
 - `no-comments`
 - `reflect`
 - `setup-pstack`
 - `show-me-your-work`
 - `swarm`
-- `tdd`
 - `technical-writing`
 - `unslop`
 - `why`

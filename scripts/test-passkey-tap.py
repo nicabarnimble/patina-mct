@@ -22,6 +22,10 @@ class TapTests(unittest.TestCase):
                 tap.origin_parts(bad)
         self.assertEqual(tap.origin_parts("https://mct.localhost:8443"),
                          ("mct.localhost:8443", 8443))
+        self.assertEqual(tap.listen_parts("127.0.0.1:9443"), ("127.0.0.1", 9443))
+        for bad in ("0.0.0.0:9443", "localhost:9443", "127.0.0.1", "user@127.0.0.1:9443"):
+            with self.assertRaises(ValueError):
+                tap.listen_parts(bad)
 
     def test_https_serves_only_fixed_assets_with_host_and_csp_guards(self):
         with tempfile.TemporaryDirectory() as directory:

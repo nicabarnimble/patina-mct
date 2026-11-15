@@ -250,6 +250,10 @@ use resident::*;
 
 #[path = "daemon/control.rs"]
 mod control;
+
+#[cfg(test)]
+#[path = "daemon/passkey_fixture.rs"]
+mod passkey_fixture;
 use control::*;
 
 #[path = "daemon/triggers.rs"]

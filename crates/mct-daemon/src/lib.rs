@@ -66,9 +66,11 @@ pub use authority_order::{
 };
 pub use authority_snapshot::{
     LocalExecutionAuthoritySnapshotDenyV1, ProvenAuthorityProjectionV1,
-    authority_projection_expectation_from_verified, local_execution_authority_snapshot,
-    local_execution_authority_snapshot_at, local_execution_authority_snapshot_from_proven,
-    local_execution_authority_snapshot_from_verified, prove_authority_projection,
+    authority_projection_expectation_from_verified, governed_proven_projection,
+    local_execution_authority_snapshot, local_execution_authority_snapshot_at,
+    local_execution_authority_snapshot_from_proven,
+    local_execution_authority_snapshot_from_verified, project_governed_config,
+    prove_authority_projection, retain_peers_named_by_ledger,
 };
 pub use blob_store::{
     MCT_BLOB_MAX_BYTES, MctLocalBlobStore, MctLocalBlobStoreError, content_addressed_blob_handle,

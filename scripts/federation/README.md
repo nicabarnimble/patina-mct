@@ -85,6 +85,18 @@ already-built component with the new native artifacts. `nix/federation-bundle.ni
 `nft` and `bpftool` utilities. Set `package` to the resulting immutable store
 path. The binaries are test-profile builds, not release/install claims.
 
+## Done and proven (C1-C7)
+
+Run the frozen C1-C7 checks against this checkout:
+
+```sh
+bash scripts/federation/suite.sh done /absolute/new/evidence-directory
+```
+
+Exit 1 means not done, with every failure tracked. Rules and exit codes are in
+[`docs/done/README.md`](../../docs/done/README.md). Pi and two-Mother governed
+steps stay blocked until the governed runtime exists.
+
 ## NIC-63 mesh job
 
 Run the first two-Mother decomposed job with the same private config and staged

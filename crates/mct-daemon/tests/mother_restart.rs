@@ -529,7 +529,7 @@ fn call_submission(child: usize, call_id: &str, key: &str, spin: u32, authority:
             "expected_receiver_grants_authority": authority,
             "vision_policy_revision": 1
         },
-        "deadline": "2099-01-01T00:00:00Z",
+        "deadline": now_plus_ms(600_000),
         "trace_context": {
             "trace_id": format!("trace-{call_id}"),
             "span_id": format!("span-{call_id}")
@@ -542,7 +542,7 @@ fn call_submission(child: usize, call_id: &str, key: &str, spin: u32, authority:
             "blake3_digest_hex": blake3::hash(&payload).to_hex().to_string()
         },
         "inline_payload_base64": BASE64.encode(&payload),
-        "idempotency_key": key
+        "idempotency_key": (!key.is_empty()).then_some(key)
     })
 }
 
@@ -1327,7 +1327,7 @@ fn run_loop(default_iterations: u64) {
 
 /// Simulate loss of recent NORMAL-synchronous SQLite commits without rolling
 /// back the independently synced canonical ledger. All paths are test-private.
-fn sqlite_rollback_case(kill_inflight: bool) {
+fn sqlite_rollback_case(kill_inflight: bool, key: &str) {
     let layout = Layout::new();
     let mut mother = Mother::start(&layout, 0).unwrap();
     provision(&layout, false);
@@ -1341,7 +1341,7 @@ fn sqlite_rollback_case(kill_inflight: bool) {
         last: true,
         spin: if kill_inflight { 1_500 } else { 1 },
         call_id: "call-sqlite-rollback".into(),
-        key: "key-sqlite-rollback".into(),
+        key: key.into(),
         state: StepState::InFlight,
     };
     if kill_inflight {
@@ -1420,12 +1420,22 @@ fn sqlite_rollback_case(kill_inflight: bool) {
 
 #[test]
 fn sqlite_rollback_after_completed_call_never_reexecutes() {
-    sqlite_rollback_case(false);
+    sqlite_rollback_case(false, "key-sqlite-rollback");
 }
 
 #[test]
 fn sqlite_rollback_after_sigkill_never_reexecutes() {
-    sqlite_rollback_case(true);
+    sqlite_rollback_case(true, "key-sqlite-rollback");
+}
+
+#[test]
+fn done_c7_unkeyed_call_never_relaunches_after_sqlite_rollback() {
+    sqlite_rollback_case(false, "");
+}
+
+#[test]
+fn done_c7_unkeyed_call_never_relaunches_after_sigkill_and_sqlite_rollback() {
+    sqlite_rollback_case(true, "");
 }
 
 #[test]

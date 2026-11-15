@@ -56,6 +56,20 @@ Repository gates, release rejection, and the Nix smoke are separate drives. Run 
 
 `nix-smoke` checks the host before invoking Nix. Unsupported hosts return `2` as `out-of-vm` without running the installer. A supported host without Nix returns `127` in that class. On `aarch64-linux` with Nix, it runs `nix run .#mother-install-smoke`, records `auto`, and returns the process exit code unchanged. Do not count a skipped smoke as a pass. See [features/linux-admin-mother.md](features/linux-admin-mother.md).
 
+The governed profile (D-58 passkey Mother running Children, NIC-126) is proven by tests, not by this helper. See [features/governed-profile.md](features/governed-profile.md).
+
+```sh
+(umask 077; export TMPDIR="$(cd "${TMPDIR:-/tmp}" && pwd -P)"; cargo test --locked -p mct-daemon --test governed_boot -- --test-threads=1)
+bash scripts/federation/suite.sh done /absolute/new/evidence-directory
+```
+
+The governed profile (D-58 passkey Mother running Children, NIC-126) is proven by tests, not by this helper. See [features/governed-profile.md](features/governed-profile.md).
+
+```sh
+(umask 077; export TMPDIR="$(cd "${TMPDIR:-/tmp}" && pwd -P)"; cargo test --locked -p mct-daemon --test governed_boot -- --test-threads=1)
+bash scripts/federation/suite.sh done /absolute/new/evidence-directory
+```
+
 ## Evidence
 
 Proof stays under `$VERIFY_PATINA_MCT_ROOT/proof`. Capture the command, the exit code, and the resulting state.
@@ -108,6 +122,8 @@ These steps need a person or a machine this skill does not substitute.
 
 - The 1Password registration, assertion, and approval taps follow [docs/passkey-admin.md](../../../docs/passkey-admin.md) and [docs/passkey-approval-RUN.md](../../../docs/passkey-approval-RUN.md). The operator uses the default browser. Leave the step marked manual when that tap did not happen. See [features/passkey-browser.md](features/passkey-browser.md).
 - The Raspberry Pi admin install is the record in [docs/nicanode0-install-evidence.md](../../../docs/nicanode0-install-evidence.md). The earlier nicamaster record is [docs/linux-admin-install-evidence.md](../../../docs/linux-admin-install-evidence.md). The operator command is in [docs/linux-admin-install.md](../../../docs/linux-admin-install.md).
+- The governed-profile 1Password tap and the governed Pi run follow [docs/done/governed-profile.md](../../../docs/done/governed-profile.md). Both stay pending until a person runs them.
+- The governed-profile 1Password tap and the governed Pi run follow [docs/done/governed-profile.md](../../../docs/done/governed-profile.md). Both stay pending until a person runs them.
 - macOS `install`, `start`, `stop`, `restart`, `uninstall`, and `scripts/release-local.sh smoke` need Darwin arm64. On any other host, `mct-daemon install` must fail before it writes supervisor state.
 - A passing `scripts/verify-release-artifact.sh` run needs a real `mct-daemon-v0.2.0-aarch64-apple-darwin.tar.gz` and the Darwin arm64 signature adapter.
 

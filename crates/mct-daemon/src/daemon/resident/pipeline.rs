@@ -821,6 +821,8 @@ async fn execute_resident_call_at_with_context(
     {
         return MctIrohCallHandlerResult::malformed();
     }
+    #[cfg(feature = "nic131-witness")]
+    super::nic131_gate::dispatch_check(request.call.trace_context.trace_id.as_str());
     let current_receiver = match fresh_resident_receiver_identity(&paths, &ledger).await {
         Ok(identity) => identity,
         Err(error) => {
@@ -868,6 +870,7 @@ async fn execute_resident_call_at_with_context(
             return MctIrohCallHandlerResult::failed("runtime unavailable");
         }
     };
+    let caller_deadline = request.call.deadline.clone();
     match admit_call_deadline(
         &request.call.deadline,
         &now,
@@ -901,6 +904,9 @@ async fn execute_resident_call_at_with_context(
     let state_path = paths.state_path().to_path_buf();
     let mut idempotency_request = request.clone();
     idempotency_request.call.call_id = caller_call_id;
+    // A retry is admitted against the caller's deadline, so the single-launch
+    // fence must judge that deadline, not this attempt's clamped one.
+    idempotency_request.call.deadline = caller_deadline;
     let idempotency_ledger = ledger.clone();
     super::idempotency::execute_idempotent_call_with_execution(
         state_path,
@@ -1505,8 +1511,8 @@ mod tests {
             .collect::<BTreeSet<_>>();
         assert_eq!(
             executions.len(),
-            4,
-            "one keyed replay, two separate peer scopes, two unkeyed attempts"
+            3,
+            "one keyed replay, two separate peer scopes, and one launch for two unkeyed attempts of one call ID (D-40)"
         );
         assert!(
             executions

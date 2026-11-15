@@ -1586,7 +1586,9 @@ mod tests {
                     current_timestamp,
                     move || {
                         let mut binding = executor_binding.clone();
-                        if provider_counter.fetch_add(1, Ordering::SeqCst) > 0 {
+                        // An admitted hello reads the binding twice: before and
+                        // after the receiver identity. Revoke after the hello.
+                        if provider_counter.fetch_add(1, Ordering::SeqCst) > 1 {
                             binding.binding_state = BindingState::Revoked;
                         }
                         async move {
@@ -1645,7 +1647,7 @@ mod tests {
 
         assert_eq!(result.outcome, CallProtocolOutcome::Denied);
         assert_eq!(result.safe_message, "not authorized");
-        assert_eq!(provider_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(provider_calls.load(Ordering::SeqCst), 3);
         assert_eq!(handler_calls.load(Ordering::SeqCst), 0);
         let call_evaluation = tokio::time::timeout(Duration::from_secs(2), async {
             loop {

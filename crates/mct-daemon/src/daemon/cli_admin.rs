@@ -237,9 +237,10 @@ pub(super) fn run_toys_authorize_slate(mut args: Vec<String>) -> Result<()> {
     let as_json = take_flag(&mut args, "--json");
     if args.len() < 2 {
         bail!(
-            "expected: mct-daemon toys authorize-slate <child-name> <project-root> [--children-dir path] [--config path] [--state path] [--json]"
+            "expected: mct-daemon toys authorize-slate <child-name> <project-root> [--expires-at rfc3339, default 30 days] [--children-dir path] [--config path] [--state path] [--json]"
         );
     }
+    let expires_at = toy_grant_expiry(&mut args)?;
     let child_name = args.remove(0);
     let project_root = canonical_dir(PathBuf::from(args.remove(0)), "project root")?;
     let value = execute_cli_administrative_mutation(
@@ -260,6 +261,7 @@ pub(super) fn run_toys_authorize_slate(mut args: Vec<String>) -> Result<()> {
             expected_state_path: state_path.clone(),
             child_name: child_name.clone(),
             project_root: project_root.clone(),
+            expires_at,
         },
     )?;
     let contracts = value["contracts"].as_u64().unwrap_or(0);
@@ -308,9 +310,10 @@ pub(super) fn run_toys_authorize_secret(mut args: Vec<String>) -> Result<()> {
     let as_json = take_flag(&mut args, "--json");
     if args.len() < 2 {
         bail!(
-            "expected: mct-daemon toys authorize-secret <child-name> <secret-name> [--children-dir path] [--config path] [--state path] [--json]"
+            "expected: mct-daemon toys authorize-secret <child-name> <secret-name> [--expires-at rfc3339, default 30 days] [--children-dir path] [--config path] [--state path] [--json]"
         );
     }
+    let expires_at = toy_grant_expiry(&mut args)?;
     let child_name = args.remove(0);
     let secret_name = args.remove(0);
     if secret_name.trim().is_empty() {
@@ -334,6 +337,7 @@ pub(super) fn run_toys_authorize_secret(mut args: Vec<String>) -> Result<()> {
             expected_state_path: state_path.clone(),
             child_name: child_name.clone(),
             secret_name: secret_name.clone(),
+            expires_at,
         },
     )?;
 
@@ -358,9 +362,24 @@ pub(super) fn run_toys_authorize_secret(mut args: Vec<String>) -> Result<()> {
     Ok(())
 }
 
+/// Decided ToyGrant policy (`docs/design/board-toygrant.md`): expiry is
+/// mandatory, independent of the issuing key, and defaults to 30 days.
+const DEFAULT_TOY_GRANT_LIFETIME: jiff::SignedDuration = jiff::SignedDuration::from_hours(30 * 24);
+
+fn toy_grant_expiry(args: &mut Vec<String>) -> Result<Timestamp> {
+    let value = match take_option(args, "--expires-at") {
+        Some(value) => value,
+        None => jiff::Timestamp::now()
+            .checked_add(DEFAULT_TOY_GRANT_LIFETIME)?
+            .to_string(),
+    };
+    Ok(Timestamp::new(value)?)
+}
+
 pub(super) fn secret_toy_grant_for_child(
     child: &mct_daemon::MctLoadedChild,
     secret_name: &str,
+    expires_at: &Timestamp,
 ) -> ToyGrant {
     ToyGrant {
         grant_id: ToyGrantId::new(format!("grant:secret:{secret_name}:{}", child.name))
@@ -394,7 +413,7 @@ pub(super) fn secret_toy_grant_for_child(
         },
         constraints: ToyGrantConstraints {
             starts_at: None,
-            expires_at: None,
+            expires_at: Some(expires_at.clone()),
             max_uses: None,
             max_duration_ms: None,
             locality_required: true,
@@ -473,6 +492,7 @@ pub(super) fn slate_toy_contract(
 pub(super) fn slate_toy_grants_for_child(
     child: &mct_daemon::MctLoadedChild,
     project_root: &Path,
+    expires_at: &Timestamp,
 ) -> Vec<ToyGrant> {
     [
         (slate_logging_toy_id(), "invoke", "logging"),
@@ -516,7 +536,7 @@ pub(super) fn slate_toy_grants_for_child(
         },
         constraints: ToyGrantConstraints {
             starts_at: None,
-            expires_at: None,
+            expires_at: Some(expires_at.clone()),
             max_uses: None,
             max_duration_ms: None,
             locality_required: true,
@@ -1133,7 +1153,7 @@ mod tests {
                 .unwrap();
         }
 
-        run_toys_authorize_secret(vec![
+        let args = vec![
             "resident-echo".into(),
             "api-token".into(),
             "--children-dir".into(),
@@ -1146,7 +1166,29 @@ mod tests {
             ledger_path.display().to_string(),
             "--uds".into(),
             dir.path().join("missing.sock").display().to_string(),
-        ])
+        ];
+        run_toys_authorize_secret(args.clone()).unwrap();
+        let defaulted = MctRuntimeStateStore::open(&state_path)
+            .unwrap()
+            .toy_grant_snapshots()
+            .unwrap()[0]
+            .constraints
+            .expires_at
+            .clone()
+            .expect("issuer default is an explicit expiry");
+        let lifetime = jiff::Timestamp::now()
+            .duration_until(defaulted.as_str().parse::<jiff::Timestamp>().unwrap());
+        assert!(
+            lifetime > jiff::SignedDuration::from_hours(29 * 24)
+                && lifetime <= DEFAULT_TOY_GRANT_LIFETIME
+        );
+        run_toys_authorize_secret(
+            [
+                args,
+                vec!["--expires-at".into(), "2099-01-01T00:00:00Z".into()],
+            ]
+            .concat(),
+        )
         .unwrap();
 
         let state = MctRuntimeStateStore::open(&state_path).unwrap();
@@ -1156,6 +1198,10 @@ mod tests {
         assert_eq!(grants.len(), 1);
         assert_eq!(grants[0].toy_id.as_str(), MCT_SECRETS_TOY_ID);
         assert_eq!(grants[0].scope.resource_id.as_deref(), Some("api-token"));
+        assert_eq!(
+            grants[0].constraints.expires_at,
+            Some(Timestamp::new("2099-01-01T00:00:00Z").unwrap())
+        );
         let grant_json = serde_json::to_string(&grants).unwrap();
         assert!(!grant_json.contains("super-secret"));
     }

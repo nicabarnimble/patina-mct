@@ -1340,7 +1340,7 @@ mod tests {
         grant.subject.caller_node_id = Some(call.caller.node_id.clone());
         grant.scope.resource_id = Some(format!("file://{}", root.display()));
         grant.scope.allowed_actions = vec!["read-content".into()];
-        grant.constraints.expires_at = None;
+        grant.constraints.expires_at = Some(call.deadline.clone());
         let imports = BTreeSet::from([
             "wasi:filesystem/types@0.2.3".into(),
             "wasi:filesystem/preopens@0.2.3".into(),

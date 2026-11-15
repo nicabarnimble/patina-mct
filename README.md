@@ -115,6 +115,7 @@ owner-authenticated local administration path, not the planned iroh admin path.
   --state ~/.mct/state.sqlite
 
 "$MCT" toys authorize-slate slate-manager /path/to/project \
+  --expires-at 2026-12-31T00:00:00Z \
   --children-dir ~/.mct/children \
   --state ~/.mct/state.sqlite
 ```

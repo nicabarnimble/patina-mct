@@ -1653,35 +1653,52 @@ impl MotherIrohEndpoint {
                             request.received_over.connection_side = ConnectionSide::Incoming;
 
                             let mut state = state.lock().await;
-                            let hello_policy = HelloPolicy {
-                                current_policy_revision: current_peer_authority.policy_revision,
-                                ..HelloPolicy::default()
-                            };
-                            let mut evaluation = evaluate_hello(
-                                &request,
-                                &current_peer_authority.bindings,
-                                &hello_policy,
-                                HelloEvaluationContext {
-                                    ids: EvaluationIds {
-                                        decision_id: state.next_decision_id("hello"),
-                                        observation_id: state.next_observation_id("hello"),
-                                    },
-                                    now: now(),
+                            let hello_context = HelloEvaluationContext {
+                                ids: EvaluationIds {
+                                    decision_id: state.next_decision_id("hello"),
+                                    observation_id: state.next_observation_id("hello"),
                                 },
-                            );
-                            if require_binding_signature {
-                                evaluation = enforce_hello_binding_signature(
+                                now: now(),
+                            };
+                            let evaluate = |authority: &MctPeerAuthoritySnapshot| {
+                                let hello_policy = HelloPolicy {
+                                    current_policy_revision: authority.policy_revision,
+                                    ..HelloPolicy::default()
+                                };
+                                let evaluation = evaluate_hello(
                                     &request,
-                                    &current_peer_authority.bindings,
-                                    &issuer_endpoint_id,
-                                    evaluation,
+                                    &authority.bindings,
+                                    &hello_policy,
+                                    hello_context.clone(),
                                 );
-                            }
-                            let receiver_authority = if evaluation.is_admitted() {
+                                if require_binding_signature {
+                                    enforce_hello_binding_signature(
+                                        &request,
+                                        &authority.bindings,
+                                        &issuer_endpoint_id,
+                                        evaluation,
+                                    )
+                                } else {
+                                    evaluation
+                                }
+                            };
+                            let mut evaluation = evaluate(&current_peer_authority);
+                            let mut receiver_authority = if evaluation.is_admitted() {
                                 receiver_authority_provider.current().await
                             } else {
                                 None
                             };
+                            // The binding read came first. Read it again after the
+                            // receiver identity, so an admitted hello names an
+                            // identity under which the binding still admitted:
+                            // a revoke committed between the two reads refuses.
+                            if evaluation.is_admitted() && receiver_authority.is_some() {
+                                let recheck = evaluate(&bindings_provider().await?);
+                                if !recheck.is_admitted() {
+                                    evaluation = recheck;
+                                    receiver_authority = None;
+                                }
+                            }
                             if evaluation.is_admitted() && receiver_authority.is_none() {
                                 evaluation.refuse_receiver_authority_unavailable();
                             }
