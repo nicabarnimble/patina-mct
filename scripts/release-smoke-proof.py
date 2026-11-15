@@ -242,6 +242,7 @@ body = expect(
         "expected_state_path": str(state),
         "child_name": "slate-manager",
         "project_root": str(project),
+        "expires_at": (datetime.now(timezone.utc) + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }),
     200,
     "Slate ToyGrants",

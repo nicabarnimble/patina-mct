@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -uo pipefail
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+MCT_PREPUSH_HOOK=1 exec bash scripts/prepush.sh

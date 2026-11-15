@@ -23,8 +23,11 @@ test('assertion binds reviewed intent, registered origin, credential and require
   assert.deepEqual(signed.intent, fixture.intent);
   assert.equal(signed.proof.scheme, 'webauthn-p256-day-key/v1');
   assert.equal(calls, 1);
-  const changed = structuredClone(fixture); changed.intent.action.body = 'substituted';
-  await assert.rejects(signPrepared(changed), /reviewed intent/);
+  for (const changed of [
+    (() => { const value = structuredClone(fixture); value.intent.action.body = 'substituted'; return value; })(),
+    (() => { const value = structuredClone(fixture); value.intent.action.scopes = ['status', 'peer_add']; return value; })(),
+    (() => { const value = structuredClone(fixture); value.intent.expires_at = '2099-01-01T00:00:00Z'; return value; })(),
+  ]) await assert.rejects(signPrepared(changed), /reviewed intent/);
   location.origin = 'https://evil.example.test';
   await assert.rejects(signPrepared(fixture), /wrong registered origin/);
   assert.equal(calls, 1);

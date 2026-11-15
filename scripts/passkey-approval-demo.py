@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fresh, isolated approvals-only registration/genesis/day-key/revocation run."""
+"""Fresh QR-phone genesis/day-key/revocation run using an independently registered root."""
 import argparse
 import json
 import os
@@ -21,7 +21,8 @@ def run(args):
     binary = str(Path(args.binary).absolute())
     common = ["--root", str(mother), "--mother", "mother-approval", "--ledger-id", "ledger-approval"]
     ticket = directory / "ticket.json"
-    pin = directory / "registered-root.json"
+    pin = Path(args.registered_root).absolute()
+    read_private(pin)
     secret = directory / "day-secret.json"
     public = directory / "day-public.json"
     approve = [sys.executable, str(Path(__file__).with_name("passkey-approve.py")),
@@ -94,7 +95,6 @@ def run(args):
 
     try:
         write_new(public, cli("day-keygen", "--secret-output", secret))
-        root_action("register", "--output", pin, "--name", "MCT approvals " + directory.parent.name[-32:])
         root_action("bootstrap", *common, "--registered-root", pin)
         start()
         root_action("issue", *common, "--ticket", ticket, "--grant", "doug-day",
@@ -116,4 +116,6 @@ if __name__ == "__main__":
     parser.add_argument("--session", required=True)
     parser.add_argument("--directory", required=True, help="new private run directory; must not exist")
     parser.add_argument("--binary", default="target/debug/mct-daemon")
+    parser.add_argument("--registered-root", required=True,
+                        help="private registered-root.json created independently at the approval RP")
     run(parser.parse_args())

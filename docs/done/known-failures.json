@@ -1,0 +1,99 @@
+{
+  "schema": "mct-done-known-failures/v1",
+  "parent": "NIC-123",
+  "failures": [
+    {
+      "check": "C1",
+      "step": "pi-installed-governed-mother",
+      "reason": "probe-not-implemented",
+      "owner": "NIC-129",
+      "note": "Governed resident boot is proven on macOS (governed_boot.rs); an installed, boot-started Pi 3B Mother is not."
+    },
+    {
+      "check": "C1",
+      "step": "pi-call-within-budget",
+      "reason": "blocked:pi-installed-governed-mother",
+      "owner": "NIC-129"
+    },
+    {
+      "check": "C3",
+      "step": "hostile-sockets-on-governed-pi",
+      "reason": "probe-not-implemented",
+      "owner": "NIC-129"
+    },
+    {
+      "check": "C3",
+      "step": "hostile-http-on-governed-pi",
+      "reason": "probe-not-implemented",
+      "owner": "NIC-129"
+    },
+    {
+      "check": "C3",
+      "step": "hostile-ungranted-path-on-governed-pi",
+      "reason": "probe-not-implemented",
+      "owner": "NIC-129"
+    },
+    {
+      "check": "C3",
+      "step": "hostile-dotdot-escape-on-governed-pi",
+      "reason": "probe-not-implemented",
+      "owner": "NIC-129"
+    },
+    {
+      "check": "C3",
+      "step": "hostile-symlink-escape-on-governed-pi",
+      "reason": "probe-not-implemented",
+      "owner": "NIC-129"
+    },
+    {
+      "check": "C3",
+      "step": "hostile-no-grant-call-on-governed-pi",
+      "reason": "probe-not-implemented",
+      "owner": "NIC-129"
+    },
+    {
+      "check": "C3",
+      "step": "hostile-forged-principal-on-governed-pi",
+      "reason": "probe-not-implemented",
+      "owner": "NIC-127"
+    },
+    {
+      "check": "C4",
+      "step": "signed-receipt-per-outcome",
+      "reason": "receipts-not-implemented",
+      "owner": "NIC-128",
+      "note": "Declared: no receipt signer or offline verifier exists to observe."
+    },
+    {
+      "check": "C4",
+      "step": "receipt-tamper-fails",
+      "reason": "blocked:signed-receipt-per-outcome",
+      "owner": "NIC-128"
+    },
+    {
+      "check": "C5",
+      "step": "person-revokes-grant",
+      "reason": "probe-not-implemented",
+      "owner": "NIC-129"
+    },
+    {
+      "check": "C5",
+      "step": "revocation-survives-sigkill-restart",
+      "reason": "blocked:person-revokes-grant",
+      "owner": "NIC-129"
+    },
+    {
+      "check": "C6",
+      "step": "two-mother-governed-pi-run",
+      "reason": "probe-not-implemented",
+      "owner": "NIC-129"
+    },
+    {
+      "check": "C7",
+      "step": "power-cut-on-pi",
+      "reason": "probe-not-implemented",
+      "owner": "NIC-129",
+      "note": "Human gate: Doug power-cycles a Pi mid-call."
+    }
+  ]
+}

@@ -1,0 +1,534 @@
+{
+  "schema": "mct-done-result/v1",
+  "frozen_source": "docs/design/mct-shape-review-opus.md",
+  "frozen_sha256": "49f72e8398e5aee4fa36f921c6ff9e2d7f4dba93a1f6f7ffffd1aeb1af2425f5",
+  "source": {
+    "head": "3a5a4d61e402f4a8cc4eddc174d0b0d80973863b",
+    "dirty": false
+  },
+  "done": false,
+  "exit_code": 1,
+  "counts": {
+    "pass": 0,
+    "partly": 5,
+    "fail": 2
+  },
+  "tracking": {
+    "untracked": [],
+    "stale": []
+  },
+  "checks": [
+    {
+      "id": "C1",
+      "verdict": "partly",
+      "governed": {
+        "status": "fail",
+        "reason": "runtime-refuses-passkey-ledger",
+        "step": "governed-runtime-startup"
+      },
+      "baseline": {
+        "status": "pass",
+        "label": "legacy-profile baseline, not governed-profile proof"
+      },
+      "steps": [
+        {
+          "check": "C1",
+          "step": "governed-runtime-startup",
+          "profile": "governed",
+          "status": "fail",
+          "reason": "runtime-refuses-passkey-ledger",
+          "basis": "observed",
+          "detail": {
+            "command": "cargo test --locked -p mct-daemon --test passkey_admin done_governed_runtime_admits_passkey_ledger -- --include-ignored --test-threads=1",
+            "passed": 0,
+            "failed": 1
+          },
+          "owner": "NIC-126"
+        },
+        {
+          "check": "C1",
+          "step": "pi-installed-governed-mother",
+          "profile": "governed",
+          "status": "blocked",
+          "reason": "blocked:governed-runtime-startup",
+          "basis": "blocked",
+          "owner": "NIC-129"
+        },
+        {
+          "check": "C1",
+          "step": "pi-call-within-budget",
+          "profile": "governed",
+          "status": "blocked",
+          "reason": "blocked:pi-installed-governed-mother",
+          "basis": "blocked",
+          "owner": "NIC-129"
+        },
+        {
+          "check": "C1",
+          "step": "nic63-repo-report-on-pi",
+          "profile": "baseline",
+          "status": "pass",
+          "reason": null,
+          "basis": "observed",
+          "owner": null
+        }
+      ]
+    },
+    {
+      "id": "C2",
+      "verdict": "fail",
+      "governed": {
+        "status": "fail",
+        "reason": "runtime-refuses-passkey-ledger",
+        "step": "governed-runtime-startup"
+      },
+      "baseline": {
+        "status": "none",
+        "label": "legacy-profile baseline, not governed-profile proof"
+      },
+      "steps": [
+        {
+          "check": "C2",
+          "step": "governed-runtime-startup",
+          "profile": "governed",
+          "status": "fail",
+          "reason": "runtime-refuses-passkey-ledger",
+          "basis": "observed",
+          "detail": {
+            "command": "cargo test --locked -p mct-daemon --test passkey_admin done_governed_runtime_admits_passkey_ledger -- --include-ignored --test-threads=1",
+            "passed": 0,
+            "failed": 1
+          },
+          "owner": "NIC-126"
+        },
+        {
+          "check": "C2",
+          "step": "toy-grant-expiry-mandatory",
+          "profile": "governed",
+          "status": "pass",
+          "reason": null,
+          "basis": "observed",
+          "detail": {
+            "command": "cargo test --locked -p mct-kernel --lib toy::tests::done_c2_toy_grant_without_expiry_is_denied -- --test-threads=1",
+            "passed": 1,
+            "failed": 0
+          },
+          "owner": null
+        },
+        {
+          "check": "C2",
+          "step": "day-key-approval-and-grant-chain",
+          "profile": "governed",
+          "status": "blocked",
+          "reason": "blocked:governed-runtime-startup",
+          "basis": "blocked",
+          "owner": "NIC-126"
+        },
+        {
+          "check": "C2",
+          "step": "unix-socket-mutation-refused",
+          "profile": "governed",
+          "status": "blocked",
+          "reason": "blocked:governed-runtime-startup",
+          "basis": "blocked",
+          "owner": "NIC-126"
+        }
+      ]
+    },
+    {
+      "id": "C3",
+      "verdict": "partly",
+      "governed": {
+        "status": "fail",
+        "reason": "runtime-refuses-passkey-ledger",
+        "step": "governed-runtime-startup"
+      },
+      "baseline": {
+        "status": "pass",
+        "label": "legacy-profile baseline, not governed-profile proof"
+      },
+      "steps": [
+        {
+          "check": "C3",
+          "step": "governed-runtime-startup",
+          "profile": "governed",
+          "status": "fail",
+          "reason": "runtime-refuses-passkey-ledger",
+          "basis": "observed",
+          "detail": {
+            "command": "cargo test --locked -p mct-daemon --test passkey_admin done_governed_runtime_admits_passkey_ledger -- --include-ignored --test-threads=1",
+            "passed": 0,
+            "failed": 1
+          },
+          "owner": "NIC-126"
+        },
+        {
+          "check": "C3",
+          "step": "hostile-sockets-on-governed-pi",
+          "profile": "governed",
+          "status": "blocked",
+          "reason": "blocked:governed-runtime-startup",
+          "basis": "blocked",
+          "owner": "NIC-129"
+        },
+        {
+          "check": "C3",
+          "step": "hostile-http-on-governed-pi",
+          "profile": "governed",
+          "status": "blocked",
+          "reason": "blocked:governed-runtime-startup",
+          "basis": "blocked",
+          "owner": "NIC-129"
+        },
+        {
+          "check": "C3",
+          "step": "hostile-ungranted-path-on-governed-pi",
+          "profile": "governed",
+          "status": "blocked",
+          "reason": "blocked:governed-runtime-startup",
+          "basis": "blocked",
+          "owner": "NIC-129"
+        },
+        {
+          "check": "C3",
+          "step": "hostile-dotdot-escape-on-governed-pi",
+          "profile": "governed",
+          "status": "blocked",
+          "reason": "blocked:governed-runtime-startup",
+          "basis": "blocked",
+          "owner": "NIC-129"
+        },
+        {
+          "check": "C3",
+          "step": "hostile-symlink-escape-on-governed-pi",
+          "profile": "governed",
+          "status": "blocked",
+          "reason": "blocked:governed-runtime-startup",
+          "basis": "blocked",
+          "owner": "NIC-129"
+        },
+        {
+          "check": "C3",
+          "step": "hostile-no-grant-call-on-governed-pi",
+          "profile": "governed",
+          "status": "blocked",
+          "reason": "blocked:governed-runtime-startup",
+          "basis": "blocked",
+          "owner": "NIC-129"
+        },
+        {
+          "check": "C3",
+          "step": "hostile-forged-principal-on-governed-pi",
+          "profile": "governed",
+          "status": "blocked",
+          "reason": "blocked:governed-runtime-startup",
+          "basis": "blocked",
+          "owner": "NIC-127"
+        },
+        {
+          "check": "C3",
+          "step": "hostile-imports-refused-locally",
+          "profile": "baseline",
+          "status": "pass",
+          "reason": null,
+          "basis": "observed",
+          "detail": {
+            "command": "cargo test --locked -p mct-daemon --lib wasm::tests::hostile:: -- --test-threads=1",
+            "passed": 4,
+            "failed": 0
+          },
+          "owner": null
+        },
+        {
+          "check": "C3",
+          "step": "forged-origin-refused-iroh",
+          "profile": "baseline",
+          "status": "pass",
+          "reason": null,
+          "basis": "observed",
+          "detail": {
+            "command": "cargo test --locked -p mct-iroh --lib tests::call_origin:: -- --test-threads=1",
+            "passed": 1,
+            "failed": 0
+          },
+          "owner": null
+        },
+        {
+          "check": "C3",
+          "step": "forged-origin-refused-resident",
+          "profile": "baseline",
+          "status": "pass",
+          "reason": null,
+          "basis": "observed",
+          "detail": {
+            "command": "cargo test --locked -p mct-daemon --bin mct-daemon call_origin:: -- --test-threads=1",
+            "passed": 2,
+            "failed": 0
+          },
+          "owner": null
+        },
+        {
+          "check": "C3",
+          "step": "expired-grant-refused-on-pi",
+          "profile": "baseline",
+          "status": "pass",
+          "reason": null,
+          "basis": "observed",
+          "owner": null
+        }
+      ]
+    },
+    {
+      "id": "C4",
+      "verdict": "fail",
+      "governed": {
+        "status": "fail",
+        "reason": "runtime-refuses-passkey-ledger",
+        "step": "governed-runtime-startup"
+      },
+      "baseline": {
+        "status": "none",
+        "label": "legacy-profile baseline, not governed-profile proof"
+      },
+      "steps": [
+        {
+          "check": "C4",
+          "step": "governed-runtime-startup",
+          "profile": "governed",
+          "status": "fail",
+          "reason": "runtime-refuses-passkey-ledger",
+          "basis": "observed",
+          "detail": {
+            "command": "cargo test --locked -p mct-daemon --test passkey_admin done_governed_runtime_admits_passkey_ledger -- --include-ignored --test-threads=1",
+            "passed": 0,
+            "failed": 1
+          },
+          "owner": "NIC-126"
+        },
+        {
+          "check": "C4",
+          "step": "signed-receipt-per-outcome",
+          "profile": "governed",
+          "status": "fail",
+          "reason": "receipts-not-implemented",
+          "basis": "declared",
+          "owner": "NIC-128"
+        },
+        {
+          "check": "C4",
+          "step": "receipt-tamper-fails",
+          "profile": "governed",
+          "status": "blocked",
+          "reason": "blocked:signed-receipt-per-outcome",
+          "basis": "blocked",
+          "owner": "NIC-128"
+        }
+      ]
+    },
+    {
+      "id": "C5",
+      "verdict": "partly",
+      "governed": {
+        "status": "fail",
+        "reason": "runtime-refuses-passkey-ledger",
+        "step": "governed-runtime-startup"
+      },
+      "baseline": {
+        "status": "pass",
+        "label": "legacy-profile baseline, not governed-profile proof"
+      },
+      "steps": [
+        {
+          "check": "C5",
+          "step": "governed-runtime-startup",
+          "profile": "governed",
+          "status": "fail",
+          "reason": "runtime-refuses-passkey-ledger",
+          "basis": "observed",
+          "detail": {
+            "command": "cargo test --locked -p mct-daemon --test passkey_admin done_governed_runtime_admits_passkey_ledger -- --include-ignored --test-threads=1",
+            "passed": 0,
+            "failed": 1
+          },
+          "owner": "NIC-126"
+        },
+        {
+          "check": "C5",
+          "step": "person-revokes-grant",
+          "profile": "governed",
+          "status": "blocked",
+          "reason": "blocked:governed-runtime-startup",
+          "basis": "blocked",
+          "owner": "NIC-126"
+        },
+        {
+          "check": "C5",
+          "step": "revocation-survives-sigkill-restart",
+          "profile": "governed",
+          "status": "blocked",
+          "reason": "blocked:person-revokes-grant",
+          "basis": "blocked",
+          "owner": "NIC-129"
+        },
+        {
+          "check": "C5",
+          "step": "toy-grant-revocation-unit",
+          "profile": "baseline",
+          "status": "pass",
+          "reason": null,
+          "basis": "observed",
+          "detail": {
+            "command": "cargo test --locked -p mct-kernel --lib toy::tests::revoked -- --test-threads=1",
+            "passed": 1,
+            "failed": 0
+          },
+          "owner": null
+        },
+        {
+          "check": "C5",
+          "step": "peer-revocation-on-fleet",
+          "profile": "baseline",
+          "status": "pass",
+          "reason": null,
+          "basis": "observed",
+          "owner": null
+        }
+      ]
+    },
+    {
+      "id": "C6",
+      "verdict": "partly",
+      "governed": {
+        "status": "fail",
+        "reason": "runtime-refuses-passkey-ledger",
+        "step": "governed-runtime-startup"
+      },
+      "baseline": {
+        "status": "pass",
+        "label": "legacy-profile baseline, not governed-profile proof"
+      },
+      "steps": [
+        {
+          "check": "C6",
+          "step": "governed-runtime-startup",
+          "profile": "governed",
+          "status": "fail",
+          "reason": "runtime-refuses-passkey-ledger",
+          "basis": "observed",
+          "detail": {
+            "command": "cargo test --locked -p mct-daemon --test passkey_admin done_governed_runtime_admits_passkey_ledger -- --include-ignored --test-threads=1",
+            "passed": 0,
+            "failed": 1
+          },
+          "owner": "NIC-126"
+        },
+        {
+          "check": "C6",
+          "step": "signed-peer-admission",
+          "profile": "governed",
+          "status": "blocked",
+          "reason": "blocked:governed-runtime-startup",
+          "basis": "blocked",
+          "owner": "NIC-126"
+        },
+        {
+          "check": "C6",
+          "step": "two-mother-governed-pi-run",
+          "profile": "governed",
+          "status": "blocked",
+          "reason": "blocked:signed-peer-admission",
+          "basis": "blocked",
+          "owner": "NIC-129"
+        },
+        {
+          "check": "C6",
+          "step": "nic63-two-mother-mesh-job",
+          "profile": "baseline",
+          "status": "pass",
+          "reason": null,
+          "basis": "observed",
+          "owner": null
+        },
+        {
+          "check": "C6",
+          "step": "survivors-serve-during-peer-loss",
+          "profile": "baseline",
+          "status": "pass",
+          "reason": null,
+          "basis": "observed",
+          "owner": null
+        }
+      ]
+    },
+    {
+      "id": "C7",
+      "verdict": "partly",
+      "governed": {
+        "status": "fail",
+        "reason": "runtime-refuses-passkey-ledger",
+        "step": "governed-runtime-startup"
+      },
+      "baseline": {
+        "status": "pass",
+        "label": "legacy-profile baseline, not governed-profile proof"
+      },
+      "steps": [
+        {
+          "check": "C7",
+          "step": "governed-runtime-startup",
+          "profile": "governed",
+          "status": "fail",
+          "reason": "runtime-refuses-passkey-ledger",
+          "basis": "observed",
+          "detail": {
+            "command": "cargo test --locked -p mct-daemon --test passkey_admin done_governed_runtime_admits_passkey_ledger -- --include-ignored --test-threads=1",
+            "passed": 0,
+            "failed": 1
+          },
+          "owner": "NIC-126"
+        },
+        {
+          "check": "C7",
+          "step": "unkeyed-single-launch-after-state-loss",
+          "profile": "governed",
+          "status": "fail",
+          "reason": "child-start-ledger-fact-missing",
+          "basis": "declared",
+          "owner": "NIC-126"
+        },
+        {
+          "check": "C7",
+          "step": "power-cut-on-pi",
+          "profile": "governed",
+          "status": "blocked",
+          "reason": "blocked:governed-runtime-startup",
+          "basis": "blocked",
+          "owner": "NIC-129"
+        },
+        {
+          "check": "C7",
+          "step": "keyed-dispatch-fence-sqlite-rollback",
+          "profile": "baseline",
+          "status": "pass",
+          "reason": null,
+          "basis": "observed",
+          "detail": {
+            "command": "cargo test --locked -p mct-daemon --test mother_restart sqlite_rollback -- --test-threads=1",
+            "passed": 2,
+            "failed": 0
+          },
+          "owner": null
+        },
+        {
+          "check": "C7",
+          "step": "sigkill-recovery-on-fleet",
+          "profile": "baseline",
+          "status": "pass",
+          "reason": null,
+          "basis": "observed",
+          "owner": null
+        }
+      ]
+    }
+  ]
+}

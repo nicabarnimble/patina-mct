@@ -120,6 +120,8 @@ pub(crate) struct ResidentLedgerWriter {
     task: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     authority_order: Arc<MotherAuthorityOrderV1>,
     cached_tip: Arc<std::sync::Mutex<CachedLedgerTip>>,
+    /// Passkey-rooted ledger: authority changes only through signed commands.
+    governed: bool,
 }
 
 enum ResidentLedgerCommand {
@@ -158,8 +160,14 @@ enum ResidentLedgerCommand {
         state_path: PathBuf,
         ack: tokio::sync::oneshot::Sender<std::result::Result<ResidentProjectedAuthority, String>>,
     },
+    /// The governed peers the writer's verified replay names right now.
+    GovernedPeers {
+        ack: tokio::sync::oneshot::Sender<std::result::Result<GovernedPeers, String>>,
+    },
     Shutdown(tokio::sync::oneshot::Sender<()>),
 }
+
+pub(crate) type GovernedPeers = std::collections::BTreeMap<String, mct_observation::GovernedPeerV1>;
 
 /// The writer's verified head and replay, with the authority projection
 /// published and proven for exactly that head.
@@ -197,6 +205,18 @@ impl ResidentProjectedAuthority {
     }
 }
 
+fn governed_peers(ledger: &JsonlObservationLedger) -> std::result::Result<GovernedPeers, String> {
+    let replay = ledger
+        .verified_replay()
+        .map_err(|error| error.to_string())?;
+    replay
+        .state
+        .passkey_admin
+        .as_ref()
+        .map(|passkey| passkey.runtime.peers.clone())
+        .ok_or_else(|| "ledger is not passkey governed".to_owned())
+}
+
 fn projected_authority(
     ledger: &JsonlObservationLedger,
     state_path: &Path,
@@ -206,6 +226,14 @@ fn projected_authority(
         .verified_replay()
         .map_err(|error| error.to_string())?
         .clone();
+    if replay.state.passkey_admin.is_some() {
+        let proven = mct_daemon::governed_proven_projection(&head, &replay);
+        return Ok(ResidentProjectedAuthority {
+            head,
+            replay,
+            proven,
+        });
+    }
     let state = MctRuntimeStateStore::open(state_path).map_err(|error| error.to_string())?;
     state
         .publish_authority_projection_from_replay(&head, &replay)
@@ -413,6 +441,9 @@ impl ResidentLedgerWriter {
                     ResidentLedgerCommand::ProjectedAuthority { ack, .. } => {
                         let _ = ack.send(Err("injected resident writer loss".into()));
                     }
+                    ResidentLedgerCommand::GovernedPeers { ack } => {
+                        let _ = ack.send(Err("injected resident writer loss".into()));
+                    }
                     ResidentLedgerCommand::Shutdown(ack) => {
                         let _ = ack.send(());
                         break;
@@ -427,6 +458,7 @@ impl ResidentLedgerWriter {
             task: Arc::new(std::sync::Mutex::new(Some(task))),
             authority_order: Arc::new(MotherAuthorityOrderV1::unavailable()),
             cached_tip: Arc::new(std::sync::Mutex::new(CachedLedgerTip::default())),
+            governed: false,
         }
     }
 
@@ -487,6 +519,9 @@ impl ResidentLedgerWriter {
                     ResidentLedgerCommand::ProjectedAuthority { ack, .. } => {
                         let _ = ack.send(Err("scripted authority writer".into()));
                     }
+                    ResidentLedgerCommand::GovernedPeers { ack } => {
+                        let _ = ack.send(Err("scripted authority writer".into()));
+                    }
                     ResidentLedgerCommand::Shutdown(ack) => {
                         let _ = ack.send(());
                         break;
@@ -501,6 +536,7 @@ impl ResidentLedgerWriter {
             task: Arc::new(std::sync::Mutex::new(Some(task))),
             authority_order: Arc::new(MotherAuthorityOrderV1::unavailable()),
             cached_tip: Arc::new(std::sync::Mutex::new(CachedLedgerTip::default())),
+            governed: false,
         }
     }
 
@@ -515,6 +551,7 @@ impl ResidentLedgerWriter {
             task: Arc::new(std::sync::Mutex::new(None)),
             authority_order: Arc::new(MotherAuthorityOrderV1::unavailable()),
             cached_tip: Arc::new(std::sync::Mutex::new(CachedLedgerTip::default())),
+            governed: false,
         }
     }
 
@@ -555,6 +592,10 @@ impl ResidentLedgerWriter {
     }
 
     fn spawn_opened(path: PathBuf, mut ledger: JsonlObservationLedger) -> Result<Self> {
+        // Unknown is governed: Unix-socket mutations fail closed.
+        let governed = ledger
+            .verified_replay()
+            .map_or(true, |replay| replay.state.passkey_admin.is_some());
         let mut dispatch_index = CallDispatchIndexV1::default();
         for entry in ledger.iter_entries() {
             dispatch_index
@@ -571,6 +612,14 @@ impl ResidentLedgerWriter {
             tokio::sync::mpsc::channel::<ResidentLedgerCommand>(RESIDENT_LEDGER_QUEUE_CAPACITY);
         let task = tokio::task::spawn_blocking(move || {
             while let Some(command) = receiver.blocking_recv() {
+                #[cfg(feature = "nic131-witness")]
+                match super::nic131_gate::writer_fault() {
+                    Some(super::nic131_gate::WriterFault::Fence) => {
+                        task_fenced.store(true, Ordering::SeqCst);
+                    }
+                    Some(super::nic131_gate::WriterFault::Stop) => break,
+                    None => {}
+                }
                 match command {
                     ResidentLedgerCommand::Write(write) => {
                         let appended_at = mct_daemon::current_timestamp_string();
@@ -658,6 +707,9 @@ impl ResidentLedgerWriter {
                     ResidentLedgerCommand::ProjectedAuthority { state_path, ack } => {
                         let _ = ack.send(projected_authority(&ledger, &state_path));
                     }
+                    ResidentLedgerCommand::GovernedPeers { ack } => {
+                        let _ = ack.send(governed_peers(&ledger));
+                    }
                     ResidentLedgerCommand::FinalizeStartup {
                         state_path,
                         config_path,
@@ -724,6 +776,7 @@ impl ResidentLedgerWriter {
             task: Arc::new(std::sync::Mutex::new(Some(task))),
             authority_order,
             cached_tip,
+            governed,
         })
     }
 
@@ -745,6 +798,10 @@ impl ResidentLedgerWriter {
             generation: authority.generation,
             source_authority_observation_id: authority.source_authority_observation_id,
         })
+    }
+
+    pub(crate) fn is_governed(&self) -> bool {
+        self.governed
     }
 
     pub(crate) fn is_fenced(&self) -> bool {
@@ -838,6 +895,22 @@ impl ResidentLedgerWriter {
             .context("send projected authority read to resident ledger writer")?;
         rx.await
             .context("receive projected authority read")?
+            .map_err(anyhow::Error::msg)
+    }
+
+    /// Governed peers from the writer's verified replay; fails closed when the
+    /// writer is fenced or the ledger is not governed.
+    pub(crate) async fn governed_peers(&self) -> Result<GovernedPeers> {
+        if self.is_fenced() {
+            bail!("resident observation writer is fenced");
+        }
+        let (ack, rx) = tokio::sync::oneshot::channel();
+        self.sender
+            .send(ResidentLedgerCommand::GovernedPeers { ack })
+            .await
+            .context("send governed peer read to resident ledger writer")?;
+        rx.await
+            .context("receive governed peer read")?
             .map_err(anyhow::Error::msg)
     }
 

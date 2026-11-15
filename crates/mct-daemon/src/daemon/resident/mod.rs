@@ -68,6 +68,8 @@ use trigger_scheduler::{
 mod restart_recovery;
 use restart_recovery::settle_prior_tenure_calls;
 
+#[cfg(feature = "nic131-witness")]
+mod nic131_gate;
 mod serving;
 #[cfg(test)]
 use serving::run_test_resident_mother_with_trigger_runtime;

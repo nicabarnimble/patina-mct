@@ -578,6 +578,8 @@ pub enum MctIdempotencyReason {
     IdempotencyKeyReuseMismatch,
     IdempotencyBudgetFull,
     IdempotencyInProgress,
+    /// An unkeyed call whose deadline outlives its single-launch fence (D-40).
+    UnkeyedDeadlineBeyondFence,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -617,6 +619,9 @@ pub fn evaluate_idempotency_request(
             "idempotency capacity unavailable; retry later"
         }
         MctIdempotencyReason::IdempotencyInProgress => "request already in progress; retry later",
+        MctIdempotencyReason::UnkeyedDeadlineBeyondFence => {
+            "unkeyed call deadline exceeds its single-launch window"
+        }
     };
     MctIdempotencyDecision {
         reason,

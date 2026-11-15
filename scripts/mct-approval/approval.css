@@ -1,0 +1,120 @@
+/* MCT approval page. Reads tokens.css only. One request per page; the request is the hero. */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+.page {
+  flex: 1; display: flex; flex-direction: column; min-height: 0;
+  padding: 6px var(--pad) 12px;
+  background: var(--bg); color: var(--ink);
+  font-family: var(--font-ui); font-size: 17px; line-height: 1.35;
+  -webkit-font-smoothing: antialiased;
+}
+.icon { display: inline-block; width: 1em; height: 1em; flex: none; vertical-align: -0.125em; }
+.icon svg { width: 100%; height: 100%; display: block; }
+
+/* Header: product + who is signed in. Plain text, no badges. */
+.page-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+  font-size: 15px; color: var(--ink-2); padding: 6px 0 10px; }
+.page-head .product { font-weight: 600; color: var(--ink); }
+.page-head .who { text-align: right; }
+
+/* Code match line: the same short code is on the bot's screen. */
+.match { display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  padding: 10px 0 12px; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule);
+  font-size: 15px; color: var(--ink-2); }
+.code { font-family: var(--font-mono); font-size: 24px; font-weight: 650; letter-spacing: 0.08em; color: var(--ink); }
+
+/* Hero: the request. */
+.request { margin-top: 18px; }
+.req-who { font-size: 17px; color: var(--ink-2); }
+.req-mother { font-family: var(--font-mono); font-size: 30px; font-weight: 650; letter-spacing: -0.01em;
+  line-height: 1.15; margin: 2px 0 18px; overflow-wrap: anywhere; }
+.req-label { font-size: 13px; font-weight: 600; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 2px; }
+.perms { list-style: none; }
+.perms li { padding: 10px 0; border-bottom: 1px solid var(--rule); }
+.perms li b { display: block; font-weight: 600; font-size: 17px; }
+.perms li span { display: block; font-size: 15px; color: var(--ink-2); }
+.req-meta { margin-top: 14px; display: grid; grid-template-columns: 62px 1fr; row-gap: 10px; column-gap: 12px; font-size: 15px; }
+.req-meta dt { color: var(--ink-3); }
+.req-meta dd b { font-weight: 600; font-size: 17px; color: var(--ink); }
+.req-meta dd span { display: block; color: var(--ink-2); }
+
+/* Bottom: one thumb zone. */
+.page-foot { margin-top: auto; padding-top: 14px; display: flex; flex-direction: column; gap: 8px; }
+.step { font-size: 13px; font-weight: 600; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.06em; text-align: center; }
+.btn { appearance: none; border: 0; width: 100%; min-height: var(--tap); border-radius: var(--radius-btn);
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  font: 600 17px/1.2 var(--font-ui); cursor: pointer; transition: transform var(--dur) var(--ease), opacity var(--dur) var(--ease); }
+.btn:active { transform: scale(0.98); }
+.btn .icon { font-size: 20px; }
+.btn-approve { background: var(--action-bg); color: var(--action-ink); }
+.btn-signin  { background: var(--signin-bg); color: var(--signin-ink); }
+.btn-quiet   { background: transparent; color: var(--ink-2); min-height: 48px; }
+.btn[aria-busy="true"] { opacity: 0.6; }
+.fine { font-size: 13px; line-height: 1.4; color: var(--ink-3); text-align: center; text-wrap: balance; }
+.fine b { font-weight: 600; color: var(--ink-2); }
+
+/* Notices (passkey cancelled, offline). A quiet tinted block, not a toast. */
+.notice { display: flex; gap: 10px; align-items: flex-start; background: var(--notice-bg); color: var(--notice-ink);
+  border-radius: 12px; padding: 11px 13px; font-size: 15px; line-height: 1.35; }
+.notice .icon { font-size: 18px; margin-top: 1px; }
+.notice b { font-weight: 600; }
+
+/* Outcome screens. */
+.result { padding-top: 56px; }
+.result-glyph { font-size: 60px; display: block; margin-bottom: 18px; }
+.result-glyph.ok { color: var(--ok); } .result-glyph.stop { color: var(--stop); }
+.result-glyph.wait { color: var(--wait); } .result-glyph.muted { color: var(--ink-3); }
+.result h1 { font-family: var(--font-display); font-size: 30px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.12; margin-bottom: 12px; }
+.result p { color: var(--ink-2); margin-bottom: 12px; }
+.result p b { color: var(--ink); font-weight: 600; }
+.mono { font-family: var(--font-mono); font-size: 0.94em; }
+.next { margin-top: 6px; padding-top: 14px; border-top: 1px solid var(--rule); }
+.next h2 { font-size: 13px; font-weight: 600; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 4px; }
+.next p { color: var(--ink); margin: 0; }
+.recap { margin-top: 18px; display: grid; grid-template-columns: 88px 1fr; row-gap: 8px; column-gap: 12px; font-size: 15px;
+  padding-top: 14px; border-top: 1px solid var(--rule); }
+.recap dt { color: var(--ink-3); } .recap dd { color: var(--ink); }
+
+/* Waiting / return-from-sign-in. */
+.lede { margin-top: 26px; }
+.lede h1 { font-family: var(--font-display); font-size: 28px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.15; margin-bottom: 10px; }
+.lede p { color: var(--ink-2); }
+.skeleton { margin-top: 26px; display: grid; gap: 12px; }
+.skeleton i { display: block; height: 14px; border-radius: 7px; background: var(--skeleton); }
+.skeleton i.tall { height: 30px; width: 70%; } .skeleton i.s { width: 55%; } .skeleton i.m { width: 80%; }
+
+/* Approving: dim the page; the system passkey sheet sits on top. */
+.dim { position: absolute; inset: 0; background: var(--scrim); }
+.sheet { position: absolute; left: 8px; right: 8px; bottom: 8px; background: var(--sheet-bg); color: var(--ink);
+  border-radius: 28px; padding: 18px 16px 38px; box-shadow: 0 -8px 40px oklch(0 0 0 / 0.18); }
+.sheet-top { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: var(--ink-3); margin-bottom: 14px; }
+.sheet h3 { font-size: 17px; font-weight: 600; text-align: center; line-height: 1.3; margin: 0 10px 14px; }
+.sheet-row { display: flex; align-items: center; gap: 12px; background: var(--sheet-row); border-radius: 12px; padding: 12px 14px; font-size: 15px; margin-bottom: 14px; }
+.sheet-row .icon { font-size: 24px; color: var(--ink-2); }
+.sheet-row small { display: block; color: var(--ink-3); font-size: 13px; }
+.sheet .sys-btn { background: var(--system-blue); color: oklch(1 0 0); border-radius: 14px; min-height: 50px; display: flex; align-items: center; justify-content: center; font-weight: 600; }
+
+@media (prefers-reduced-motion: reduce) { .btn, .btn:active { transition: none; transform: none; } }
+a.btn { text-decoration: none; }
+/* Pending: the two passkey moments, named up front. */
+.steps { list-style: none; margin-top: 26px; border-top: 1px solid var(--rule); counter-reset: s; }
+.steps li { counter-increment: s; display: grid; grid-template-columns: 28px 1fr; gap: 4px; padding: 12px 0; border-bottom: 1px solid var(--rule); font-size: 15px; color: var(--ink-2); }
+.steps li::before { content: counter(s); font: 600 15px/1.35 var(--font-mono); color: var(--ink-3); }
+.steps li b { display: inline; color: var(--ink); font-size: 17px; font-weight: 600; }
+/* Access proof (kind = proof). Its own button color: never the ink Approve, never a key. */
+.btn-check { background: var(--check-bg); color: var(--check-ink); }
+.btn-link { gap: 8px; color: var(--signin-ink); }
+.proof-h { font-family: var(--font-display); font-size: 26px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.18; margin-bottom: 16px; }
+.doc { display: flex; gap: 12px; align-items: flex-start; padding: 12px 0; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+.doc > .icon { font-size: 26px; color: var(--ink-2); margin-top: 2px; }
+.doc b { display: block; font-weight: 600; font-size: 17px; }
+.doc .mono { display: block; font-size: 13.5px; color: var(--ink-2); overflow-wrap: anywhere; }
+.req-meta.wide, .request .req-meta { grid-template-columns: 74px 1fr; }
+.proof-safe { display: flex; gap: 10px; margin-top: 16px; font-size: 15px; color: var(--ink-2); }
+.proof-safe .icon { font-size: 18px; color: var(--ok); margin-top: 1px; }
+.progress { list-style: none; margin-top: 24px; border-top: 1px solid var(--rule); }
+.progress li { display: flex; gap: 12px; align-items: center; padding: 13px 0; border-bottom: 1px solid var(--rule); font-size: 16px; color: var(--ink-3); }
+.progress li .icon { font-size: 20px; }
+.progress li.done { color: var(--ink-2); } .progress li.done .icon { color: var(--ok); }
+.progress li.now { color: var(--ink); font-weight: 600; }
+@media (prefers-reduced-motion: no-preference) { .progress li.now .icon svg { animation: spin 1.2s linear infinite; } }
+@keyframes spin { to { transform: rotate(360deg); } }

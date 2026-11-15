@@ -10,6 +10,7 @@ repository.workspace = true
 default = []
 fuzzing = []
 release-smoke-internal = []
+nic131-witness = ["mct-observation/nic131-witness"]
 
 [dependencies]
 anyhow.workspace = true
@@ -40,6 +41,13 @@ rustix.workspace = true
 p256.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 mct-observation = { path = "../mct-observation" }
+mct-kernel = { path = "../mct-kernel" }
+base64.workspace = true
+blake3.workspace = true
+const-hex.workspace = true
+jiff.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 tempfile.workspace = true
 wat.workspace = true
 

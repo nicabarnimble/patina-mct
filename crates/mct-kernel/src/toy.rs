@@ -113,6 +113,10 @@ pub enum ToyGrantReasonCode {
     ExpiredGrant,
     /// Matching grant was revoked, superseded, or denied.
     RevokedGrant,
+    /// Matching grant has no `expires_at`; open-ended Toy authority is refused.
+    MissingExpiry,
+    /// Matching filesystem grant names no `resource_id`, so it would cover every root.
+    MissingResource,
     WrongScope,
     UnknownToy,
     PolicyDenied,
@@ -475,7 +479,7 @@ pub fn evaluate_toy_grant_for_call(
             }
         }
 
-        if let Some(reason) = toy_time_window_denial(&request.now, &grant.constraints) {
+        if let Some(reason) = toy_grant_bounds_denial(&request.now, toy, grant) {
             return denied(
                 call,
                 request,
@@ -733,7 +737,7 @@ pub fn evaluate_toy_grant_for_route_snapshot(
                 continue;
             }
         }
-        if let Some(reason) = toy_time_window_denial(&request.now, &grant.constraints) {
+        if let Some(reason) = toy_grant_bounds_denial(&request.now, toy, grant) {
             return route_denied(
                 call,
                 request,
@@ -862,22 +866,29 @@ fn scope_matches(
         )
 }
 
-fn toy_time_window_denial(
+/// Bounds every Toy grant must carry before it can authorize: a closed time
+/// window and, for filesystem Toys, an exact resource.
+fn toy_grant_bounds_denial(
     now: &Timestamp,
-    constraints: &ToyGrantConstraints,
+    toy: &CanonicalToyContract,
+    grant: &ToyGrant,
 ) -> Option<ToyGrantReasonCode> {
     match expiry_decision(
         now,
-        constraints.starts_at.as_ref(),
-        constraints.expires_at.as_ref(),
-        ExpiryRequirement::Optional,
+        grant.constraints.starts_at.as_ref(),
+        grant.constraints.expires_at.as_ref(),
+        ExpiryRequirement::Mandatory,
     ) {
-        ExpiryDecision::Open => None,
-        ExpiryDecision::Expired => Some(ToyGrantReasonCode::ExpiredGrant),
-        ExpiryDecision::NotYet | ExpiryDecision::Missing | ExpiryDecision::PresentButForbidden => {
-            Some(ToyGrantReasonCode::PolicyDenied)
+        ExpiryDecision::Open => {}
+        ExpiryDecision::Expired => return Some(ToyGrantReasonCode::ExpiredGrant),
+        ExpiryDecision::Missing => return Some(ToyGrantReasonCode::MissingExpiry),
+        ExpiryDecision::NotYet | ExpiryDecision::PresentButForbidden => {
+            return Some(ToyGrantReasonCode::PolicyDenied);
         }
     }
+    let filesystem =
+        toy.contract.namespace == "wasi" && toy.contract.interface_name.starts_with("filesystem/");
+    (filesystem && grant.scope.resource_id.is_none()).then_some(ToyGrantReasonCode::MissingResource)
 }
 
 fn toy_token_expiry(
@@ -1252,26 +1263,62 @@ mod tests {
     }
 
     #[test]
-    fn toy_grant_without_expiry_still_authorizes() {
+    fn done_c2_toy_grant_without_expiry_is_denied() {
         let mut open = grant(ToyGrantState::Active);
         open.constraints.expires_at = None;
-        let result = evaluate_toy_grant_for_call(&call(), &request(), &[toy()], &[open]);
-        assert_eq!(result.evaluation.verdict, ToyGrantVerdict::Allowed);
+        let result = evaluate_toy_grant_for_call(&call(), &request(), &[toy()], &[open.clone()]);
+        assert!(
+            result.authorized.is_none(),
+            "DONE-REASON: toy-grant-without-expiry-admitted"
+        );
+        assert_eq!(result.evaluation.verdict, ToyGrantVerdict::Denied);
         assert_eq!(
             result.evaluation.reason_code,
-            ToyGrantReasonCode::ActiveGrant
+            ToyGrantReasonCode::MissingExpiry
         );
         assert_eq!(
             result.evaluation.grant_id.as_ref().map(ToyGrantId::as_str),
             Some("grant-logging")
         );
-        let authorized = result.authorized.expect("open toy grant mints a token");
+
+        let snapshot =
+            evaluate_toy_grant_for_snapshot(&call(), &request(), &snapshot_with_grant(open));
+        assert!(snapshot.authorized.is_none());
         assert_eq!(
-            authorized.expires_at(),
-            &Timestamp::new("2026-05-31T00:10:00Z").unwrap()
+            snapshot.evaluation.reason_code,
+            ToyGrantReasonCode::MissingExpiry
         );
-        assert_eq!(authorized.grant_id().as_str(), "grant-logging");
-        assert_eq!(authorized.action(), "write");
+    }
+
+    #[test]
+    fn filesystem_grant_must_name_its_resource() {
+        let mut filesystem = toy();
+        filesystem.contract.namespace = "wasi".into();
+        filesystem.contract.interface_name = "filesystem/preopens".into();
+        let mut unbounded = grant(ToyGrantState::Active);
+        unbounded.scope.resource_id = None;
+        let denied =
+            evaluate_toy_grant_for_call(&call(), &request(), &[filesystem.clone()], &[unbounded]);
+        assert!(denied.authorized.is_none());
+        assert_eq!(
+            denied.evaluation.reason_code,
+            ToyGrantReasonCode::MissingResource
+        );
+
+        let bounded = evaluate_toy_grant_for_call(
+            &call(),
+            &request(),
+            &[filesystem],
+            &[grant(ToyGrantState::Active)],
+        );
+        assert!(bounded.is_allowed());
+
+        let mut non_filesystem = grant(ToyGrantState::Active);
+        non_filesystem.scope.resource_id = None;
+        assert!(
+            evaluate_toy_grant_for_call(&call(), &request(), &[toy()], &[non_filesystem])
+                .is_allowed()
+        );
     }
 
     #[test]
@@ -1563,8 +1610,13 @@ mod tests {
 
     #[test]
     fn toy_grant_reason_uses_snake_case_wire_names() {
-        let encoded = serde_json::to_string(&ToyGrantReasonCode::MissingGrant).unwrap();
-        assert_eq!(encoded, "\"missing_grant\"");
+        for (reason, wire) in [
+            (ToyGrantReasonCode::MissingGrant, "\"missing_grant\""),
+            (ToyGrantReasonCode::MissingExpiry, "\"missing_expiry\""),
+            (ToyGrantReasonCode::MissingResource, "\"missing_resource\""),
+        ] {
+            assert_eq!(serde_json::to_string(&reason).unwrap(), wire);
+        }
     }
 
     #[test]

@@ -6,6 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+nic131-witness = []
+
 [dependencies]
 mct-kernel = { path = "../mct-kernel" }
 blake3.workspace = true

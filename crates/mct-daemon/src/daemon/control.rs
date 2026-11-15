@@ -427,9 +427,35 @@ pub(super) fn resident_peer_mutation_handler(
         let configured_path = configured_path.clone();
         let ledger = ledger.clone();
         async move {
+            if ledger.is_governed() {
+                return governed_unix_socket_refusal();
+            }
             execute_resident_peer_mutation(owner, &configured_path, &ledger, &path, &body).await
         }
     })
+}
+
+/// D-58 governed profile: authority changes only through signed passkey
+/// commands, so a Unix-socket mutation is refused before any effect.
+pub(super) fn governed_unix_socket_refusal() -> mct_daemon::MctControlPlaneResponse {
+    mct_daemon::MctControlPlaneResponse {
+        status_code: 403,
+        content_type: "application/json".into(),
+        body: serde_json::json!({
+            "error": "governed Mother refuses Unix-socket mutation; use signed passkey commands",
+            "reason": "governed_unix_socket_mutation_refused"
+        })
+        .to_string(),
+    }
+}
+
+/// Offline mutation paths bypass the resident writer, so they read the ledger's
+/// first frame and refuse a governed Mother before opening anything.
+pub(super) fn refuse_governed_offline_mutation(ledger_path: &Path) -> Result<()> {
+    if mct_observation::ledger_is_passkey_governed(ledger_path).unwrap_or(true) {
+        bail!("governed_offline_mutation_refused: use signed passkey commands");
+    }
+    Ok(())
 }
 
 pub(super) fn execute_offline_peer_mutation(
@@ -438,6 +464,7 @@ pub(super) fn execute_offline_peer_mutation(
     path: &str,
     body: &[u8],
 ) -> Result<PeerMutationSuccess> {
+    refuse_governed_offline_mutation(ledger_path)?;
     let mut ledger = JsonlObservationLedger::open(ledger_path, "ledger-local", "local-mct")
         .with_context(|| {
             format!(
@@ -1055,6 +1082,7 @@ pub(super) fn execute_offline_artifact_stage(
     ledger_path: &Path,
     request: &MctArtifactStageRequest,
 ) -> Result<MctArtifactAcquisitionReport> {
+    refuse_governed_offline_mutation(ledger_path)?;
     let mut ledger = JsonlObservationLedger::open(ledger_path, "ledger-local", "local-mct")
         .with_context(|| {
             format!(
@@ -1722,6 +1750,7 @@ pub(super) fn execute_offline_registry_mutation(
     path: &str,
     body: &[u8],
 ) -> Result<serde_json::Value> {
+    refuse_governed_offline_mutation(ledger_path)?;
     let mut ledger = JsonlObservationLedger::open(ledger_path, "ledger-local", "local-mct")
         .with_context(|| {
             format!(
@@ -1761,6 +1790,7 @@ pub(super) struct ToyAuthorizeSlateRequest {
     pub(super) expected_state_path: PathBuf,
     pub(super) child_name: String,
     pub(super) project_root: PathBuf,
+    pub(super) expires_at: Timestamp,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -1772,6 +1802,7 @@ pub(super) struct ToyAuthorizeSecretRequest {
     pub(super) expected_state_path: PathBuf,
     pub(super) child_name: String,
     pub(super) secret_name: String,
+    pub(super) expires_at: Timestamp,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -1846,7 +1877,7 @@ fn prepare_administrative_mutation(
                 state_path: state_path.to_path_buf(),
                 child_name: request.child_name,
                 contracts: slate_toy_contracts(),
-                grants: slate_toy_grants_for_child(&child, &project_root),
+                grants: slate_toy_grants_for_child(&child, &project_root, &request.expires_at),
             })
         }
         "/toys/authorize-secret" => {
@@ -1865,7 +1896,11 @@ fn prepare_administrative_mutation(
                 state_path: state_path.to_path_buf(),
                 child_name: request.child_name,
                 contracts: vec![mct_secrets_toy_contract()],
-                grants: vec![secret_toy_grant_for_child(&child, &request.secret_name)],
+                grants: vec![secret_toy_grant_for_child(
+                    &child,
+                    &request.secret_name,
+                    &request.expires_at,
+                )],
             })
         }
         "/pando/record" => {
@@ -2303,6 +2338,7 @@ pub(super) fn execute_offline_administrative_mutation(
     path: &str,
     body: &[u8],
 ) -> Result<serde_json::Value> {
+    refuse_governed_offline_mutation(ledger_path)?;
     let root = state_path
         .parent()
         .or_else(|| ledger_path.parent())
@@ -2604,6 +2640,9 @@ fn resident_mutation_handler(
         let ledger = ledger.clone();
         let mutation_guard = Arc::clone(&mutation_guard);
         async move {
+            if ledger.is_governed() {
+                return governed_unix_socket_refusal();
+            }
             let _mutation_guard = mutation_guard.lock().await;
             match resident_mutation_route(&path) {
                 Some(ResidentMutationKind::AuthorityImport) => match state_path.as_deref() {
@@ -2799,6 +2838,7 @@ pub(super) fn execute_offline_child_mutation(
     path: &str,
     body: &[u8],
 ) -> Result<ChildMutationSuccess> {
+    refuse_governed_offline_mutation(ledger_path)?;
     let mut ledger = JsonlObservationLedger::open(ledger_path, "ledger-local", "local-mct")
         .with_context(|| {
             format!(
@@ -2941,6 +2981,7 @@ pub(super) fn execute_offline_identity_mutation(
     ledger_path: &Path,
     requested_scope: Option<MctOperatorNodeScope>,
 ) -> Result<MctLocalNodeIdentity> {
+    refuse_governed_offline_mutation(ledger_path)?;
     let store = MctDaemonConfigStore::new(configured_path);
     let existing = store.load()?;
     let scope = match (&existing.local_identity, requested_scope) {
@@ -3898,10 +3939,12 @@ mod tests {
         .await;
         assert_eq!(status, 200, "{response}");
 
+        let mut next = request;
+        next.call.call_id = CallId::new("call-after-child-revoke").unwrap();
         let after = crate::resident::execute_resident_call(
             paths,
             ledger.clone(),
-            request,
+            next,
             crate::resident::ResidentPayloadIngress::local(None),
         )
         .await;
@@ -4173,6 +4216,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn done_c2_governed_mother_refuses_unix_socket_and_offline_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        let children_dir = dir.path().join("children");
+        let state_path = dir.path().join("state.sqlite");
+        let ledger_path = dir.path().join("observations.jsonl");
+        let socket_path = dir.path().join("control.sock");
+        write_resident_wasm_child(&children_dir);
+        crate::passkey_fixture::GovernedLedger::create(&ledger_path);
+        let ledger = ResidentLedgerWriter::open_passkey_admin(
+            ledger_path.clone(),
+            "ledger-local",
+            "local-mct",
+        )
+        .unwrap();
+        let before = std::fs::read(&ledger_path).unwrap();
+        let listener = Arc::new(UnixListener::bind(&socket_path).unwrap());
+        let handler = resident_observed_mutation_handler(
+            config_path.clone(),
+            children_dir.clone(),
+            state_path.clone(),
+            ledger.clone(),
+        );
+        let secret = serde_json::json!({
+            "mutation_id": "governed-uds-secret",
+            "expected_config_path": config_path,
+            "expected_children_dir": children_dir,
+            "expected_state_path": state_path,
+            "child_name": "resident-echo",
+            "secret_name": "api-token-name",
+            "expires_at": "2099-01-01T00:00:00Z"
+        });
+        for (path, body) in [
+            ("/toys/authorize-secret", secret.clone()),
+            (
+                "/children/approve",
+                serde_json::json!({"child_name": "resident-echo"}),
+            ),
+            (
+                "/children/revoke",
+                serde_json::json!({"child_name": "resident-echo"}),
+            ),
+            ("/watch/supporting-grant", serde_json::json!({})),
+            ("/peers/add", serde_json::json!({})),
+            ("/authority/import-toy-state", serde_json::json!({})),
+            ("/artifacts/stage", serde_json::json!({})),
+            ("/peers/revoke", serde_json::json!({})),
+        ] {
+            let (status, response) = post_mutation(
+                Arc::clone(&listener),
+                handler.clone(),
+                &socket_path,
+                path,
+                body,
+            )
+            .await;
+            assert_eq!(status, 403, "{path}: {response}");
+            assert!(
+                response.contains("governed_unix_socket_mutation_refused"),
+                "{response}"
+            );
+        }
+        assert_eq!(std::fs::read(&ledger_path).unwrap(), before);
+        assert!(!config_path.exists() && !state_path.exists());
+        ledger.close().await;
+
+        let offline = execute_offline_administrative_mutation(
+            &config_path,
+            &children_dir,
+            &state_path,
+            &ledger_path,
+            "/toys/authorize-secret",
+            &serde_json::to_vec(&secret).unwrap(),
+        )
+        .unwrap_err();
+        assert!(
+            offline
+                .to_string()
+                .contains("governed_offline_mutation_refused")
+        );
+        assert_eq!(std::fs::read(&ledger_path).unwrap(), before);
+    }
+
+    #[tokio::test]
     async fn live_toy_grants_and_composition_state_are_observed_before_effects() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.json");
@@ -4199,6 +4326,25 @@ mod tests {
             ledger.clone(),
         );
 
+        let ledger_before = std::fs::read(&ledger_path).unwrap();
+        let (open_ended_status, open_ended) = post_mutation(
+            Arc::clone(&listener),
+            handler.clone(),
+            &socket_path,
+            "/toys/authorize-secret",
+            serde_json::json!({
+                "mutation_id": "test-authorize-secret-without-expiry",
+                "expected_config_path": config_path,
+                "expected_children_dir": children_dir,
+                "expected_state_path": state_path,
+                "child_name": "resident-echo",
+                "secret_name": "api-token-name"
+            }),
+        )
+        .await;
+        assert_eq!(open_ended_status, 400, "{open_ended}");
+        assert_eq!(std::fs::read(&ledger_path).unwrap(), ledger_before);
+
         for (path, body) in [
             (
                 "/toys/authorize-slate",
@@ -4208,7 +4354,8 @@ mod tests {
                     "expected_children_dir": children_dir,
                     "expected_state_path": state_path,
                     "child_name": "resident-echo",
-                    "project_root": dir.path()
+                    "project_root": dir.path(),
+                    "expires_at": "2099-01-01T00:00:00Z"
                 }),
             ),
             (
@@ -4219,7 +4366,8 @@ mod tests {
                     "expected_children_dir": children_dir,
                     "expected_state_path": state_path,
                     "child_name": "resident-echo",
-                    "secret_name": "api-token-name"
+                    "secret_name": "api-token-name",
+                    "expires_at": "2099-01-01T00:00:00Z"
                 }),
             ),
             (
@@ -4248,7 +4396,14 @@ mod tests {
         ledger.close().await;
 
         let state = MctRuntimeStateStore::open(&state_path).unwrap();
-        assert_eq!(state.toy_grant_snapshots().unwrap().len(), 5);
+        let grants = state.toy_grant_snapshots().unwrap();
+        assert_eq!(grants.len(), 5);
+        let requested = Timestamp::new("2099-01-01T00:00:00Z").unwrap();
+        assert!(
+            grants
+                .iter()
+                .all(|grant| grant.constraints.expires_at.as_ref() == Some(&requested))
+        );
         let ledger_text = std::fs::read_to_string(ledger_path).unwrap();
         assert!(ledger_text.contains(mct_observation::AUTHORITY_FACT_DETAIL_PREFIX));
         assert!(ledger_text.contains("toy_grant_put"));
@@ -4359,7 +4514,8 @@ mod tests {
                     "expected_children_dir": children_dir,
                     "expected_state_path": state_path,
                     "child_name": "resident-echo",
-                    "project_root": dir.path()
+                    "project_root": dir.path(),
+                    "expires_at": "2099-01-01T00:00:00Z"
                 }),
             ),
             (
@@ -4370,7 +4526,8 @@ mod tests {
                     "expected_children_dir": children_dir,
                     "expected_state_path": state_path,
                     "child_name": "resident-echo",
-                    "secret_name": "phase-i-secret-name"
+                    "secret_name": "phase-i-secret-name",
+                    "expires_at": "2099-01-01T00:00:00Z"
                 }),
             ),
             (
@@ -4766,6 +4923,7 @@ mod tests {
             expected_state_path: state.clone(),
             child_name: "resident-echo".into(),
             secret_name: "credential-name".into(),
+            expires_at: Timestamp::new("2099-01-01T00:00:00Z").unwrap(),
         };
         execute_offline_administrative_mutation(
             &config,
@@ -4832,6 +4990,7 @@ mod tests {
             expected_state_path: state_path.clone(),
             child_name: "resident-echo".into(),
             secret_name: "credential-name".into(),
+            expires_at: Timestamp::new("2099-01-01T00:00:00Z").unwrap(),
         };
         let (status, _) = post_mutation(
             listener,
@@ -5023,7 +5182,11 @@ mod tests {
             .unwrap();
         let legacy = MctRuntimeStateStore::open(&state_path).unwrap();
         let contract = mct_secrets_toy_contract();
-        let grant = secret_toy_grant_for_child(&child, "legacy-secret");
+        let grant = secret_toy_grant_for_child(
+            &child,
+            "legacy-secret",
+            &Timestamp::new("2099-01-01T00:00:00Z").unwrap(),
+        );
         legacy.upsert_toy_contract(&contract).unwrap();
         legacy.upsert_toy_grant_snapshot(&grant).unwrap();
         drop(legacy);
@@ -5042,7 +5205,8 @@ mod tests {
             "expected_children_dir": children_dir,
             "expected_state_path": state_path,
             "child_name": "resident-echo",
-            "secret_name": "legacy-secret"
+            "secret_name": "legacy-secret",
+            "expires_at": "2099-01-01T00:00:00Z"
         });
         let (blocked_status, blocked) = post_mutation(
             Arc::clone(&listener),

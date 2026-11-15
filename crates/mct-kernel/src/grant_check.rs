@@ -1,8 +1,8 @@
 //! Shared grant-check rules for a Child toy call and an admin-key route.
 //!
-//! The action list and the expiry window are one decision. Toy calls keep
-//! optional expiry. Day-to-day admin keys require expiry. The recovery grant
-//! is not a day-to-day key and does not carry one.
+//! The action list and the expiry window are one decision. Toy grants and
+//! day-to-day admin keys require expiry. The recovery grant is not a
+//! day-to-day key and does not carry one.
 
 use crate::MctCall;
 use crate::admin_key::{
@@ -17,9 +17,7 @@ use crate::toy::{
 /// How a grant's `expires_at` participates in the check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ExpiryRequirement {
-    /// Absent means the window is open. Toy grants use this.
-    Optional,
-    /// Absent denies. Day-to-day admin keys use this.
+    /// Absent denies. Toy grants and day-to-day admin keys use this.
     Mandatory,
     /// Present denies. The recovery grant uses this.
     Forbidden,
@@ -128,10 +126,6 @@ pub(crate) fn expiry_decision(
             None => ExpiryDecision::Missing,
             Some(expires_at) if now >= expires_at => ExpiryDecision::Expired,
             Some(_) => ExpiryDecision::Open,
-        },
-        ExpiryRequirement::Optional => match expires_at {
-            Some(expires_at) if now >= expires_at => ExpiryDecision::Expired,
-            _ => ExpiryDecision::Open,
         },
     }
 }
