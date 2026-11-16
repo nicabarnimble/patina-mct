@@ -7,7 +7,8 @@ import { execFileSync } from 'node:child_process';
 import { identity, loadConfig, validateKnownHosts, sshArgs, saveRequest, saveResult, loadResult, validateFirst, validateReplay, validateWorkerSummary, validateStudioSummary, makeResult, getOrRun, revocationIdentity, makeRevocationReceipt, makeRevocationIntent, makeRevocationBaseline, saveRevocationBaseline, saveRevocationReceipt, loadRevocationReceipt, loadRevocationIntent, loadRevocationBaseline, getOrRunRevocation, validateRevocationReply, validateExecutorAttestation, HelperClient, freshRun, revocationRun, verifyRemoteArtifacts, validateLumeInspection, validateSmokeRuns, revocationEnabled, hash } from './client.mjs';
 const dir = () => mkdtempSync(join(homedir(), '.mct-client-test-'));
 const job = identity('a'.repeat(64),'b'.repeat(64),'worker');
-const report = {schema:'mct-repo-report/v1',sha256:'a'.repeat(64),package_count:2,registry_count:1,git_count:0,local_count:1,packages:{foo:['1','2'],wasmtime:['1']},duplicates:{foo:['1','2']},selected:{iroh:[],rusqlite:[],wasmtime:['1'],'wasmtime-wasi':[]}};
+const report = {schema:'mct-repo-report/v1',sha256:'a'.repeat(64),package_count:2,registry_count:1,git_count:0,local_count:1,duplicates:{foo:['1','2']},selected:{iroh:[],rusqlite:[],wasmtime:['1'],'wasmtime-wasi':[]}};
+const currentReport = {...report,packages:{foo:['1','2'],wasmtime:['1']}};
 const attestation={vm_name:'nic73-worker',machine_identifier_sha256:'c'.repeat(64),hardware_uuid_sha256:'d'.repeat(64),nat_ip:'10.1.2.4'};
 const ed25519Key='AAAAC3NzaC1lZDI1NTE5AAAAIAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB';
 const knownHostsLine=(host=attestation.nat_ip,key=ed25519Key)=>`${host} ssh-ed25519 ${key}\n`;
@@ -19,7 +20,7 @@ function fixtures(r = report) {
   const preSummary={...studioSummary}; return {first,replay,summary,studioSummary,preSummary};
 }
 function resultFixture() {
-  const {first,replay,summary,studioSummary,preSummary}=fixtures();
+  const {first,replay,summary,studioSummary,preSummary}=fixtures(currentReport);
   return makeResult(job,first,replay,summary,studioSummary,preSummary,'artifact',{studio:'studio-endpoint',worker:'worker-endpoint'},{studio_binary_sha256:'1'.repeat(64),studio_helper_sha256:'2'.repeat(64),worker_binary_sha256:'3'.repeat(64),worker_helper_sha256:'4'.repeat(64)},attestation);
 }
 test('identity remains exactly the merged v1 workload identity',() => {
@@ -74,9 +75,9 @@ test('remote daemon and helper metadata are trusted before independent hashing',
   let calls=0;await assert.rejects(verifyRemoteArtifacts(c,{runImpl:async()=>({stdout:++calls===1?'501\nRegular File|501|1|700\nRegular File|501|1|700\n':`${'a'.repeat(64)}  ${c.worker.binary}\n${'c'.repeat(64)}  ${c.worker.helper}\n`,stderr:''})}),/helper digest mismatch/);
 });
 test('reply, replay and summary validation fail closed',() => {
-  const {first,replay,summary,studioSummary}=fixtures(); assert.deepEqual(validateFirst(first,job),report); validateReplay(replay,first,job); validateWorkerSummary(summary,job); validateWorkerSummary({...summary,runtime_completed:2},job);const recomputed={...summary,runtime_started:2,runtime_completed:2,toy_allowed:2,execution_call_ids:['old','receiver-call']};delete recomputed.execution_call_id;validateWorkerSummary(recomputed,job,{...summary,execution_call_id:'old'},'recovered_recomputed'); validateStudioSummary(studioSummary,job);
+  const {first,replay,summary,studioSummary}=fixtures(); assert.deepEqual(validateFirst(first,job),report); assert.deepEqual(validateFirst(fixtures(currentReport).first,job),currentReport); validateReplay(replay,first,job); validateWorkerSummary(summary,job); validateWorkerSummary({...summary,runtime_completed:2},job);const recomputed={...summary,runtime_started:2,runtime_completed:2,toy_allowed:2,execution_call_ids:['old','receiver-call']};delete recomputed.execution_call_id;validateWorkerSummary(recomputed,job,{...summary,execution_call_id:'old'},'recovered_recomputed'); validateStudioSummary(studioSummary,job);
   for (const bad of [{...first,outcome:'failed'},{...first,protocol_reason:'idempotency_replay_completed'},{...first,route_taken:{runtime_kind:'remote_peer',node_id:'other'}},{...first,decoded_result:{results:[{err:'x'}]}},{...first,inline_result_payload_base64:'!'}]) assert.throws(()=>validateFirst(bad,job));
-  for (const r of [{...report,sha256:'c'.repeat(64)},{...report,schema:'wrong'},{...report,package_count:4},{...report,extra:1},{...report,duplicates:{foo:['2','1']}},{...report,selected:{...report.selected,iroh:['1','1']}}]) assert.throws(()=>validateFirst(fixtures(r).first,job));
+  for (const r of [{...report,sha256:'c'.repeat(64)},{...report,schema:'wrong'},{...report,package_count:4},{...report,extra:1},{...report,duplicates:{foo:['2','1']}},{...report,selected:{...report.selected,iroh:['1','1']}},{...currentReport,packages:[]},{...currentReport,packages:{foo:['2','1']}},{...currentReport,packages:{foo:['1','3'],wasmtime:['1']}}]) assert.throws(()=>validateFirst(fixtures(r).first,job));
   assert.throws(()=>validateReplay({...replay,protocol_reason:'other'},first,job)); assert.throws(()=>validateReplay({...replay,inline_result_payload_base64:'e30='},first,job)); assert.throws(()=>validateWorkerSummary({...summary,runtime_started:2},job)); assert.throws(()=>validateWorkerSummary({...summary,runtime_completed:0},job)); assert.throws(()=>validateWorkerSummary({...summary,runtime_failed:1},job)); assert.throws(()=>validateWorkerSummary({...summary,toy_allowed:0},job)); assert.throws(()=>validateWorkerSummary({...summary,toy_denied:1},job)); assert.throws(()=>validateWorkerSummary({...summary,execution_call_id:''},job)); assert.throws(()=>validateStudioSummary({...studioSummary,runtime_started:1},job));
 });
 test('durable publish, corruption and fresh cache avoid transport',async () => {

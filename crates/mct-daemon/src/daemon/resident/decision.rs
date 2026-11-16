@@ -1073,6 +1073,40 @@ mod tests {
         }));
     }
 
+    #[test]
+    fn exact_mother_constraint_cannot_rescue_a_revoked_remote_peer() {
+        let fixture = decision_fixture();
+        let child = test_child();
+        let mut revoked = fixture.config.clone();
+        for peer in revoked.peers.values_mut() {
+            peer.binding_state = BindingState::Revoked;
+        }
+        let snapshot = resident_test_authority_snapshot(
+            &revoked,
+            Some(&fixture.state),
+            std::slice::from_ref(&child),
+            Timestamp::new("2026-07-09T00:01:00Z").unwrap(),
+            1,
+        )
+        .unwrap();
+
+        let pinned = authorize_resident_child_from_snapshot_with_required_node(
+            &snapshot,
+            vec![child],
+            &fixture.call,
+            Some(&MctNodeId::new("remote-mct").unwrap()),
+        )
+        .unwrap();
+
+        let RouteDisposition::Denied { decision, .. } = pinned else {
+            panic!("a required remote Mother must not rescue a revoked peer");
+        };
+        assert!(decision.authority_evaluations.iter().all(|evaluation| {
+            evaluation.candidate.node_id.as_str() != "remote-mct"
+                || evaluation.outcome == CandidateAuthorityOutcome::Eliminated
+        }));
+    }
+
     #[tokio::test]
     async fn resident_route_optimization_cannot_grant_authority() {
         let dir = tempfile::tempdir().unwrap();

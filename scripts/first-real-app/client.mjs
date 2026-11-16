@@ -121,14 +121,17 @@ export async function withJobLock(root, job, fn) {
 }
 function sortedUnique(a, min = 0) { assert.ok(Array.isArray(a) && a.length >= min); for (let i=0;i<a.length;i++) { assert.ok(typeof a[i] === 'string' && a[i].length > 0); if (i) assert.ok(a[i-1] < a[i]); } }
 export function validateReport(r, job) {
-  keys(r,['schema','sha256','package_count','registry_count','git_count','local_count','packages','duplicates','selected']);
+  const hasPackages = Object.hasOwn(r, 'packages');
+  keys(r,['schema','sha256','package_count','registry_count','git_count','local_count',...(hasPackages?['packages']:[]),'duplicates','selected']);
   assert.equal(r.schema,'mct-repo-report/v1'); assert.equal(r.sha256,job.job_identity.input_sha256);
   for (const k of ['package_count','registry_count','git_count','local_count']) assert.ok(Number.isSafeInteger(r[k]) && r[k] >= 0);
   assert.ok(r.package_count > 0 && r.package_count === r.registry_count + r.git_count + r.local_count);
-  assert.ok(r.packages && typeof r.packages === 'object' && !Array.isArray(r.packages));
-  for (const [name,versions] of Object.entries(r.packages)) { assert.ok(name.length); sortedUnique(versions,1); }
+  if (hasPackages) {
+    assert.ok(r.packages && typeof r.packages === 'object' && !Array.isArray(r.packages));
+    for (const [name,versions] of Object.entries(r.packages)) { assert.ok(name.length); sortedUnique(versions,1); }
+  }
   assert.ok(r.duplicates && typeof r.duplicates === 'object' && !Array.isArray(r.duplicates));
-  for (const [name,versions] of Object.entries(r.duplicates)) { assert.ok(name.length); sortedUnique(versions,2); same(versions,r.packages[name]); }
+  for (const [name,versions] of Object.entries(r.duplicates)) { assert.ok(name.length); sortedUnique(versions,2); if(hasPackages) same(versions,r.packages[name]); }
   keys(r.selected,['iroh','rusqlite','wasmtime','wasmtime-wasi']); for (const a of Object.values(r.selected)) sortedUnique(a);
   assert.ok(Buffer.byteLength(JSON.stringify(r)) <= 32768); return r;
 }

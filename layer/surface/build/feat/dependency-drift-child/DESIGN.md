@@ -27,7 +27,8 @@ a grant. A separately versioned typed WIT successor remains future work.
 
 ## Inventory shape
 
-Keep `mct-repo-report/v1` and add one backward-compatible field:
+Keep `mct-repo-report/v1` and evolve it compatibly: readers accept legacy
+reports without `packages`, while 0.2.0 writers add the field:
 
 ```json
 {

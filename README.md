@@ -116,7 +116,7 @@ the planned iroh admin path.
   --state ~/.mct/state.sqlite
 
 "$MCT" toys grant-directory-read mct-repo-report /path/to/project \
-  --expires-at 2099-01-01T00:00:00Z \
+  --expires-at 2026-12-31T00:00:00Z \
   --children-dir ~/.mct/children \
   --state ~/.mct/state.sqlite
 ```

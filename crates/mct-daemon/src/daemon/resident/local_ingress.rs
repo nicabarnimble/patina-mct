@@ -1245,6 +1245,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resident_mesh_job_required_node_participates_in_retry_fingerprint() {
+        let dir = private_tempdir("mct-mesh-job-retry-constraint-");
+        let (paths, _identity_path, ledger_path) = local_paths(&dir);
+        let ledger = ResidentLedgerWriter::spawn_authority_for_test(ledger_path.clone()).unwrap();
+        let peer = MctUdsPeerCredentials {
+            uid: 501,
+            gid: 20,
+            pid: Some(42),
+        };
+        let constrained = |required_node_id: &str| {
+            let mut body: serde_json::Value = serde_json::from_slice(&job_submission_body(
+                "job-retry-constraint",
+                &["first", "second"],
+            ))
+            .unwrap();
+            body["pieces"][0]["required_node_id"] = serde_json::json!(required_node_id);
+            body["pieces"][1]["required_node_id"] = serde_json::json!(required_node_id);
+            serde_json::to_vec(&body).unwrap()
+        };
+
+        let first =
+            execute_local_submission(paths.clone(), ledger.clone(), peer, constrained("mother-a"))
+                .await
+                .unwrap();
+        assert_eq!(first.status_code, 200, "{}", first.body);
+
+        let changed_constraint =
+            execute_local_submission(paths, ledger.clone(), peer, constrained("mother-b"))
+                .await
+                .unwrap();
+        assert!(
+            changed_constraint
+                .body
+                .contains("idempotency_key_reuse_mismatch"),
+            "{}",
+            changed_constraint.body
+        );
+        ledger.close().await;
+    }
+
+    #[tokio::test]
     async fn resident_mesh_job_decomposes_one_submission_into_ordinary_piece_calls() {
         let dir = private_tempdir("mct-mesh-job-");
         let (paths, _identity_path, ledger_path) = local_paths(&dir);
