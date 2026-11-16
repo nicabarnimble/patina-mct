@@ -68,9 +68,10 @@ enum Request {
     },
     ProvisionRepoReport {
         package: PathBuf,
+        snapshot: RepoSnapshot,
     },
     GrantRepoReport {
-        caller_node: String,
+        caller_node: Option<String>,
         mutation_id: String,
         expires_at: String,
     },
@@ -98,8 +99,25 @@ struct Target {
 #[serde(deny_unknown_fields)]
 struct MeshJobPiece {
     piece_id: String,
+    required_node_id: Option<String>,
     payload_json: String,
     target: Target,
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum RepoSnapshot {
+    A,
+    B,
+}
+
+impl RepoSnapshot {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::A => "a",
+            Self::B => "b",
+        }
+    }
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -890,7 +908,7 @@ impl Host {
         )
     }
 
-    fn provision_repo_report(&mut self, package: &Path) -> Result<Value> {
+    fn provision_repo_report(&mut self, package: &Path, snapshot: RepoSnapshot) -> Result<Value> {
         self.require_running()?;
         ensure!(
             self.repo_report.is_none(),
@@ -900,7 +918,13 @@ impl Host {
         let component =
             read_bounded_regular(&package.join("share/mct-repo-report.wasm"), 2 * 1024 * 1024)?;
         let manifest = read_bounded_regular(&package.join("share/child.toml"), 256 * 1024)?;
-        let input = read_bounded_regular(&package.join("share/Cargo.lock"), 2 * 1024 * 1024)?;
+        let input = read_bounded_regular(
+            &package
+                .join("share/snapshots")
+                .join(snapshot.as_str())
+                .join("Cargo.lock"),
+            2 * 1024 * 1024,
+        )?;
         let source = auxiliary_path(&self.root, "repo-source");
         let data_root = auxiliary_path(&self.root, "repo-data");
         private_fs::ensure_directory(&source)?;
@@ -916,7 +940,7 @@ impl Host {
         }
         let stage = self.request("POST", "/artifacts/stage", Some(&json!({
             "source_root": source, "manifest_path": "child.toml", "component_path": "mct-repo-report.wasm",
-            "claimed_child_name": "mct-repo-report", "claimed_artifact_version": "0.1.0",
+            "claimed_child_name": "mct-repo-report", "claimed_artifact_version": "0.2.0",
             "expected_digest": format!("blake3:{}", blake3::hash(&component).to_hex()),
             "expected_manifest_digest": format!("sha256:{}", sha256(&manifest)),
             "standing_source_authority_id": null, "claimed_publisher": null, "require_source_sidecars": false,
@@ -947,6 +971,7 @@ impl Host {
         });
         Ok(json!({
             "artifact_id": artifact_id,
+            "snapshot": snapshot,
             "input_sha256": input_sha256,
             "data_root": data_root,
             "verification_outcome": stage["verification_outcome"],
@@ -956,12 +981,14 @@ impl Host {
 
     fn grant_repo_report(
         &mut self,
-        caller_node: &str,
+        caller_node: Option<&str>,
         mutation_id: &str,
         expires_at: &str,
     ) -> Result<Value> {
         self.require_running()?;
-        validate_name(caller_node)?;
+        if let Some(caller_node) = caller_node {
+            validate_name(caller_node)?;
+        }
         validate_name(mutation_id)?;
         let fixture = self
             .repo_report
@@ -1070,10 +1097,14 @@ impl Host {
             .map(|piece| {
                 validate_name(&piece.piece_id)?;
                 ensure!(seen.insert(piece.piece_id.clone()), "duplicate mesh job piece id");
+                if let Some(required_node_id) = &piece.required_node_id {
+                    validate_name(required_node_id)?;
+                }
                 validate_target(&piece.target)?;
                 let payload = validated_payload(&piece.payload_json)?;
                 Ok(json!({
                     "piece_id": piece.piece_id,
+                    "required_node_id": piece.required_node_id,
                     "target": piece.target,
                     "payload_metadata": {"data_classification": "public", "size_bytes": payload.len(), "contains_secret_scoped_material": false},
                     "payload": {"payload_kind": "inline_payload", "inline_payload_ref": format!("payload-{job_id}-{}", piece.piece_id), "content_type": "application/json", "size_bytes": payload.len(), "blake3_digest_hex": blake3::hash(payload).to_hex().to_string()},
@@ -1252,12 +1283,14 @@ fn dispatch(host: &mut Option<Host>, request: Request) -> Result<Value> {
                     serde_json::to_value(config.peers).map_err(Into::into)
                 }
                 Request::Call { destination, label } => host.call(destination, &label),
-                Request::ProvisionRepoReport { package } => host.provision_repo_report(&package),
+                Request::ProvisionRepoReport { package, snapshot } => {
+                    host.provision_repo_report(&package, snapshot)
+                }
                 Request::GrantRepoReport {
                     caller_node,
                     mutation_id,
                     expires_at,
-                } => host.grant_repo_report(&caller_node, &mutation_id, &expires_at),
+                } => host.grant_repo_report(caller_node.as_deref(), &mutation_id, &expires_at),
                 Request::MeshJob { job_id, pieces } => host.submit_mesh_job(&job_id, &pieces),
                 Request::CallTarget {
                     call_id,
@@ -1639,13 +1672,21 @@ mod tests {
 
     #[test]
     fn ownership_lock_excludes_other_roots_and_rejects_symlinks() {
-        use std::os::unix::fs::symlink;
-        let home = tempfile::tempdir().unwrap();
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let private_tempdir = || {
+            let dir = tempfile::Builder::new()
+                .prefix("mct-federation-lock-")
+                .tempdir_in(std::env::var_os("HOME").unwrap())
+                .unwrap();
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+            dir
+        };
+        let home = private_tempdir();
         let lock = acquire_host_lock(home.path()).unwrap();
         assert!(acquire_host_lock(home.path()).is_err());
         drop(lock);
         assert!(acquire_host_lock(home.path()).is_ok());
-        let other = tempfile::tempdir().unwrap();
+        let other = private_tempdir();
         symlink(
             home.path().join(".mct-federation"),
             other.path().join(".mct-federation"),

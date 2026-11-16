@@ -52,7 +52,7 @@ use forwarding::*;
 mod pipeline;
 pub(super) use pipeline::{
     ResidentCallIngressContext, ResidentRuntimePaths, execute_resident_call,
-    execute_resident_call_with_context,
+    execute_resident_call_with_context, execute_resident_call_with_required_node,
 };
 #[cfg(test)]
 use pipeline::{execute_resident_call_at, execute_resident_call_with_post_mint_mutation};

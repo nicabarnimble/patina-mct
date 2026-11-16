@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/../.."
-output="$PWD/target/first-real-app"
+output=${1:-"$PWD/target/first-real-app"}
+[[ $output == /* ]] || { echo 'output must be absolute' >&2; exit 2; }
 mkdir -p "$output"
-CARGO_TARGET_DIR="$output/build" cargo build -p mct-repo-report --target wasm32-wasip1 --release --locked --offline
+offline=${MCT_CHILD_CARGO_OFFLINE:-1}
+case "$offline" in
+  1) offline_flag=(--offline) ;;
+  0) offline_flag=() ;;
+  *) echo 'MCT_CHILD_CARGO_OFFLINE must be 0 or 1' >&2; exit 2 ;;
+esac
+CARGO_TARGET_DIR="$output/build" cargo build -p mct-repo-report --target wasm32-wasip1 --release --locked "${offline_flag[@]}"
 wasm-tools component new "$output/build/wasm32-wasip1/release/mct_repo_report.wasm" -o "$output/mct-repo-report.wasm"
 wasm-tools validate --features component-model "$output/mct-repo-report.wasm"
 wasm-tools component wit "$output/mct-repo-report.wasm" > "$output/child.wit"

@@ -30,6 +30,7 @@ struct ReportV1 {
     registry_count: usize,
     git_count: usize,
     local_count: usize,
+    packages: BTreeMap<String, Vec<String>>,
     duplicates: BTreeMap<String, Vec<String>>,
     selected: BTreeMap<String, Vec<String>>,
 }
@@ -168,18 +169,21 @@ pub fn inspect_bytes(input: &str, bytes: &[u8]) -> Result<String, &'static str> 
             .or_default()
             .insert(version.clone());
     }
+    let packages = versions
+        .into_iter()
+        .map(|(name, values)| (name, values.into_iter().collect::<Vec<_>>()))
+        .collect::<BTreeMap<_, _>>();
     let mut duplicates = BTreeMap::new();
     let mut selected = BTreeMap::new();
-    for (name, values) in versions {
-        let v: Vec<String> = values.into_iter().collect();
-        if v.len() > 1 {
-            duplicates.insert(name.clone(), v.clone());
+    for (name, package_versions) in &packages {
+        if package_versions.len() > 1 {
+            duplicates.insert(name.clone(), package_versions.clone());
         }
         if matches!(
             name.as_str(),
             "iroh" | "rusqlite" | "wasmtime" | "wasmtime-wasi"
         ) {
-            selected.insert(name, v);
+            selected.insert(name.clone(), package_versions.clone());
         }
     }
     let report = ReportV1 {
@@ -189,6 +193,7 @@ pub fn inspect_bytes(input: &str, bytes: &[u8]) -> Result<String, &'static str> 
         registry_count: registry,
         git_count: git,
         local_count: local,
+        packages,
         duplicates,
         selected,
     };

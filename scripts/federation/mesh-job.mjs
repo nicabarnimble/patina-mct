@@ -13,7 +13,7 @@ const runtimeKinds = new Set(['runtime_execution_started', 'runtime_execution_co
 const nonempty = value => typeof value === 'string' && value.length > 0;
 const traceId = observation => observation.trace_id ?? observation.trace?.trace_id;
 
-function resultPayload(piece) {
+export function resultPayload(piece) {
   assert.ok(nonempty(piece.inline_result_payload_base64), 'completed piece has no result bytes');
   const decoded = JSON.parse(Buffer.from(piece.inline_result_payload_base64, 'base64').toString('utf8'));
   assert.deepEqual(decoded, piece.decoded_result, 'decoded piece result differs from result bytes');
@@ -46,13 +46,13 @@ export function assertMeshJobResult(reply, jobId, a, b, inputSha256) {
   return { local, delegated, report };
 }
 
-function correlationFor(observations, callerCallId) {
+export function correlationFor(observations, callerCallId) {
   const matches = observations.filter(observation => observation.peer_correlation?.caller_call_id === callerCallId);
   assert.equal(matches.length, 1, `missing or duplicate peer correlation for ${callerCallId}`);
   return matches[0];
 }
 
-function runtimeFor(observations, callId) {
+export function runtimeFor(observations, callId) {
   return observations.filter(observation => runtimeKinds.has(observation.kind) && observation.call_id === callId);
 }
 
@@ -106,7 +106,7 @@ export async function runMeshJob(input, options = {}) {
       async provisionHost(current, host) {
         await options.provisionHost?.(current, host);
         if (host.index !== 1) return;
-        host.repoReport = await current.request(host, { op: 'provision_repo_report', package: config.package });
+        host.repoReport = await current.request(host, { op: 'provision_repo_report', package: config.package, snapshot: 'b' });
         assert.equal(host.repoReport?.verification_outcome, 'verified');
         assert.equal(host.repoReport?.approval_state, 'approved');
         current.emit('repo-report-provisioned', { node: host.node, artifact_id: host.repoReport.artifact_id, input_sha256: host.repoReport.input_sha256 });

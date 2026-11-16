@@ -23,13 +23,19 @@ local Toy. A remote command run through SSH is not application acceptance.
 ## Chosen workload
 
 A bot asks nicamaster for a dependency inventory of a real repository's Cargo.lock snapshot.
-A Wasm Child reads the scoped snapshot through the existing directory-read Toy and returns its hash, package/source counts, duplicate versions, and selected dependency versions.
+A Wasm Child reads the scoped snapshot through the existing directory-read Toy and returns its hash, package/source counts, the complete package/version inventory, duplicate versions, and selected dependency versions.
 This helps release checks, uses a real host capability, and avoids inventing native shell execution or HTTP authority for the first application.
 
 The input is content-addressed and bounded. The request includes the expected
 snapshot hash; changed bytes cannot silently reuse an old job. The report is not
 a vulnerability scan. Native repository builds and website fetching are later
 workloads, not substitutes for this path.
+
+This report is the application reference shape. `h1-git-child`,
+`slate-manager`, `folder-watch-actor`, `watch-null-sink`, `mct-test-echo`, and
+inline WAT components remain test-only compatibility, security, smoke, or ABI
+fixtures. Keep them, but do not use them as the product acceptance workload or
+copy their historical worlds into new application guidance.
 
 ## Fleet map
 
